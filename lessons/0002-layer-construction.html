@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>002 &mdash; Layer: Constructing Services with Dependencies</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 720px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2.2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.6rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+  .hl { background: #fef3c7; padding: 0.1rem 0.2rem; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  .step { margin: 1.2rem 0; padding: 0.8rem 1rem; border-radius: 6px; }
+  .step-1 { background: #eff6ff; border: 1px solid #bfdbfe; }
+  .step-2 { background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .step-3 { background: #fef9c3; border: 1px solid #fde68a; }
+
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.92rem; }
+  th { background: #f1f5f9; text-align: left; padding: 0.35rem 0.55rem; }
+  td { padding: 0.35rem 0.55rem; border-bottom: 1px solid #f1f5f9; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  blockquote {
+    border-left: 3px solid #ddd6fe; margin: 0.9rem 0; padding: 0.4rem 0.9rem;
+    color: #4c1d95; font-style: italic; background: #f5f3ff;
+    border-radius: 0 6px 6px 0; font-size: 0.94rem;
+  }
+
+  .bad { border-left: 3px solid #ef4444; padding-left: 0.8rem; margin: 0.7rem 0; font-size: 0.9rem; }
+  .good { border-left: 3px solid #22c55e; padding-left: 0.8rem; margin: 0.7rem 0; font-size: 0.9rem; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+
+  @media (max-width: 600px) { body { padding: 2rem 0.8rem; } }
+</style>
+</head>
+<body>
+
+<h1>Layer <span style="font-weight:400;color:#94a3b8;">&mdash; Constructing Services with Dependencies</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 002 &mdash; <code>Layer.succeed</code>, <code>Layer.effect</code>, <code>Layer.provide</code>, and wiring it all together
+</p>
+
+<h2>Recall: where we left off</h2>
+
+<p>
+  You know Context is a typed map from tags to services. You know how to define a
+  tag with <code>Context.Service</code> and retrieve it with <code>yield*</code>.
+  You know how to provide a service with <code>Effect.provideService</code>.
+</p>
+
+<p>
+  But <strong>what if a service needs another service to be built?</strong>
+</p>
+
+<pre><code>class Config extends Context.Service&lt;Config, {
+  readonly get: Effect.Effect&lt;{ level: string }&gt;
+}&gt;()("Config") {}
+
+class Logger extends Context.Service&lt;Logger, {
+  readonly log: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Logger") {}
+
+// Logger needs Config to determine log level.
+// How do we build Logger given Config?</code></pre>
+
+<p>
+  Without Layer, you'd either leak the dependency into Logger's interface
+  (<code>log(msg): Effect&lt;void, never, Config&gt;</code>) or manually thread it through
+  with closures. <strong>Layer is the construct that solves this.</strong>
+</p>
+
+<h2>What a Layer is</h2>
+
+<p>
+  A <code>Layer&lt;ROut, E, RIn&gt;</code> is a <strong>recipe</strong> for building
+  one or more services. Think of it as a constructor factory:
+</p>
+
+<div class="diagram">
+            ┌── Services this layer PRODUCES
+            │           ┌── Error during construction (usually never)
+            │           │           ┌── Services this layer NEEDS to be built
+            ▼           ▼           ▼
+  Layer&lt;ROut,        E,         RIn&gt;
+
+      R     === RequirementsOut    O
+      E     === Error              E
+      R     === RequirementsIn     I
+</div>
+
+<p>
+  A mnemonic: <strong>ROEI</strong> &mdash; produces <strong>R</strong>esources,
+  may <strong>E</strong>rror, <strong>I</strong>nputs required.
+</p>
+
+<h2>Step 1: Layer.succeed &mdash; a service with no dependencies</h2>
+
+<div class="step step-1">
+<p><strong>Config</strong> doesn't depend on anything. It can just exist.</p>
+</div>
+
+<pre><code>import { Context, Effect, Layer } from "effect"
+
+class Config extends Context.Service&lt;Config, {
+  readonly get: Effect.Effect&lt;{ level: string }&gt;
+}&gt;()("Config") {}
+
+//      Layer&lt;Config, never, never&gt;
+//            ^^^^^^ ^^^^^  ^^^^^
+//            Output  Error  Input (none)
+const ConfigLive = Layer.succeed(Config, {
+  get: Effect.succeed({ level: "INFO" })
+})</code></pre>
+
+<p>
+  <code>Layer.succeed(tag, implementation)</code> &mdash; the tag comes first, then
+  a plain object implementing the Shape. No dependencies, no errors.
+</p>
+
+<h2>Step 2: Layer.effect &mdash; a service that needs dependencies</h2>
+
+<div class="step step-2">
+<p><strong>Logger</strong> needs Config to build itself. Use <code>Layer.effect</code> with a generator that <code>yield*</code>s the dependency.</p>
+</div>
+
+<pre><code>class Logger extends Context.Service&lt;Logger, {
+  readonly log: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Logger") {}
+
+//      Layer&lt;Logger, never, Config&gt;
+//                        ^^^^^^
+//              "I need Config to build Logger"
+const LoggerLive = Layer.effect(Logger,
+  Effect.gen(function* () {
+    const config = yield* Config  // &larr; pull Config from context
+    return {
+      log: (msg) =&gt;
+        Effect.gen(function* () {
+          const { level } = yield* config.get
+          console.log(`[${level}] ${msg}`)
+        })
+    }
+  })
+)</code></pre>
+
+<p>
+  Inside <code>Layer.effect</code>, the generator can <code>yield*</code> any
+  dependency tag. The resulting Layer type automatically records those as
+  <code>RIn</code>. Here, <code>Layer&lt;Logger, never, Config&gt;</code> means:
+  "I produce Logger, I can't fail, and I need Config."
+</p>
+
+<blockquote>
+  The generator inside Layer.effect runs <em>once</em> when the layer is built.
+  The closure it returns captures the dependencies. Logger's own
+  <code>log()</code> method has <code>R = never</code> &mdash; the dependency is
+  resolved at <em>construction</em> time, not call time.
+</blockquote>
+
+<h2>Step 3: Layer.provide &mdash; satisfying a layer's dependencies</h2>
+
+<div class="step step-3">
+<p>LoggerLive needs Config. Provide ConfigLive to LoggerLive.</p>
+</div>
+
+<pre><code>// LoggerLive has type Layer&lt;Logger, never, Config&gt;
+// ConfigLive has type Layer&lt;Config, never, never&gt;
+//
+// provide: feed ConfigLive into LoggerLive's Config requirement
+
+const AppLayer = LoggerLive.pipe(
+  Layer.provide(ConfigLive)
+)
+// Type: Layer&lt;Logger, never, never&gt;
+//                    ^^^^^^^  Config requirement &rarr; satisfied!
+</code></pre>
+
+<p>
+  <code>Layer.provide</code> is <strong>vertical composition</strong>: the
+  provided layer's output becomes the consuming layer's input. The result's
+  <code>RIn</code> is the provided layer's <code>RIn</code> (here, nothing).
+</p>
+
+<h2>Step 4: Effect.provide &mdash; wiring the layer into your program</h2>
+
+<p>
+  Once your layer has all dependencies satisfied (<code>RIn = never</code>),
+  provide it to your program:
+</p>
+
+<pre><code>const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  yield* logger.log("hello world")
+})
+// Type: Effect&lt;void, never, Logger&gt;
+
+const runnable = program.pipe(
+  Effect.provide(AppLayer)
+)
+// Type: Effect&lt;void, never, never&gt;  &mdash; all requirements satisfied
+
+Effect.runPromise(runnable)
+// &rarr; [INFO] hello world</code></pre>
+
+<h2>The complete picture</h2>
+
+<div class="diagram">
+  ┌──────────┐        ┌──────────┐
+  │ Config   │        │ Logger   │
+  │ (no deps)│        │ (needs   │
+  └────┬─────┘        │  Config) │
+       │              └────┬─────┘
+       ▼                   ▼
+  ConfigLive          LoggerLive
+  Layer.succeed       Layer.effect
+       │                   │
+       └─────┬─────────────┘
+             │  Layer.provide
+             ▼
+          AppLayer
+       (all deps closed)
+             │
+             │  Effect.provide
+             ▼
+          program     &rarr;    runnable
+  Effect&lt;A, E, Logger&gt;    Effect&lt;A, E, never&gt;
+</div>
+
+<h2>Layer naming conventions (v4)</h2>
+
+<table>
+<tr><th>Pattern</th><th>Meaning</th><th>Example</th></tr>
+<tr><td><code>layer</code></td><td>Primary/default implementation</td><td><code>Logger.layer</code></td></tr>
+<tr><td><code>layerTest</code></td><td>Test implementation</td><td><code>Logger.layerTest</code></td></tr>
+<tr><td><code>layerX</code></td><td>Variant (e.g., different backend)</td><td><code>Logger.layerSqlite</code></td></tr>
+</table>
+
+<p>
+  In v4 the convention is <code>layer</code>, not v3's <code>Live</code> or
+  <code>Default</code>. For services without a single obvious default
+  implementation, use descriptive suffixes.
+</p>
+
+<h2>What Layer.effect can do that Layer.succeed can't</h2>
+
+<table>
+<tr><th></th><th>Layer.succeed</th><th>Layer.effect</th></tr>
+<tr><td>Has dependencies</td><td>No (<code>RIn = never</code>)</td><td>Yes (<code>yield* otherTag</code>)</td></tr>
+<tr><td>Can fail</td><td>No (<code>E = never</code>)</td><td>Yes (error channel)</td></tr>
+<tr><td>Needs async setup</td><td>No</td><td>Yes (e.g., await connection)</td></tr>
+<tr><td>Needs resource cleanup</td><td>No</td><td>Yes (via acquireRelease)</td></tr>
+</table>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/layers/">Managing Layers &mdash; Effect Documentation</a>
+</p>
+<p style="font-size:0.88rem;color:#64748b;">
+  Also: <a href="../reference/glossary.html">Glossary</a> for canonical definitions.
+  Previous: <a href="0001-context.html">001 &mdash; Context</a>.
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+<p style="margin-bottom:0.5rem;font-size:0.88rem;">Answer from memory.</p>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> <code>Layer&lt;Logger, never, Config&gt;</code> means:</p>
+  <label><input type="radio" name="q1" value="a"> a) Logger has no dependencies and logs Config values</label>
+  <label><input type="radio" name="q1" value="b"> b) Building Logger produces Config, never fails</label>
+  <label><input type="radio" name="q1" value="c"> c) Building Logger produces Logger, never fails, needs Config</label>
+  <label><input type="radio" name="q1" value="d"> d) Logger is provided by Config</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> What does <code>LoggerLive.pipe(Layer.provide(ConfigLive))</code> do?</p>
+  <label><input type="radio" name="q2" value="a"> a) Makes ConfigLive produce Logger as well</label>
+  <label><input type="radio" name="q2" value="b"> b) Satisfies LoggerLive's Config requirement using ConfigLive</label>
+  <label><input type="radio" name="q2" value="c"> c) Creates a new layer that produces both Logger and Config</label>
+  <label><input type="radio" name="q2" value="d"> d) Replaces ConfigLive's implementation with LoggerLive</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+
+<form id="q3" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q3.</strong> When would you use <code>Layer.effect</code> over <code>Layer.succeed</code>?</p>
+  <label><input type="radio" name="q3" value="a"> a) When the service needs no dependencies</label>
+  <label><input type="radio" name="q3" value="b"> b) When you want the service to be built asynchronously with dependencies</label>
+  <label><input type="radio" name="q3" value="c"> c) When the service is a string or number</label>
+  <label><input type="radio" name="q3" value="d"> d) They are interchangeable &mdash; no difference</label>
+  <button type="button" onclick="checkQ3()">Check</button>
+  <div class="feedback" id="q3-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 002 &mdash; Layer series. Next: <a href="0003-layer-merge.html">003 &mdash; Layer.merge and Layer.provideMerge</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite &mdash; review the section above.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "c"); }
+function checkQ2() { check("q2", "b"); }
+function checkQ3() { check("q3", "b"); }
+</script>
+
+</body>
+</html>

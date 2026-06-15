@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Layer Cheat Sheet — Effect v4</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 10pt; line-height: 1.55; color: #1a1a1a;
+    background: #fbfbf8; max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem;
+  }
+
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.2rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 1.6rem 0 0.5rem; color: #2c3e50; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.2rem; }
+  h3 { font-size: 0.92rem; font-weight: 600; margin: 1rem 0 0.3rem; }
+
+  p { margin-bottom: 0.5rem; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 4px;
+    padding: 0.5rem 0.7rem; overflow-x: auto; margin: 0.4rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 7.8pt; line-height: 1.45;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.88em; }
+  pre code { font-size: inherit; }
+
+  table {
+    width: 100%; border-collapse: collapse; margin: 0.4rem 0;
+    font-size: 9pt; page-break-inside: avoid;
+  }
+  th { background: #f1f5f9; text-align: left; padding: 0.25rem 0.4rem; font-size: 8.5pt; }
+  td { padding: 0.25rem 0.4rem; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+
+  .sig { font-size: 7.5pt; color: #64748b; font-family: 'JetBrains Mono', monospace; }
+
+  .two-col {
+    display: flex; gap: 1.2rem; margin: 0.4rem 0;
+  }
+  .two-col > div { flex: 1; min-width: 0; }
+
+  footer {
+    margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid #e2e8f0;
+    font-size: 7.5pt; color: #94a3b8;
+  }
+
+  .note { font-size: 8.5pt; color: #64748b; }
+
+  @media print {
+    body { max-width: none; padding: 0.5in; }
+    pre { white-space: pre-wrap; }
+    .two-col { display: block; }
+    .two-col > div { margin-bottom: 0.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Layer Cheat Sheet</h1>
+<p style="color:#64748b;font-size:8.5pt;">Effect v4 &mdash; Type-safe dependency injection</p>
+
+<!------------------ TAGS ------------------>
+
+<h2>Service Tags</h2>
+
+<div class="two-col">
+<div>
+<strong>Function-style</strong>
+<pre><code>const Foo = Context.Service&lt;{
+  readonly bar: Effect.Effect&lt;number&gt;
+}&gt;("Foo")</code></pre>
+</div>
+<div>
+<strong>Class-style (preferred)</strong>
+<pre><code>class Foo extends Context.Service&lt;Foo, {
+  readonly bar: Effect.Effect&lt;number&gt;
+}&gt;()("app/Foo") {}</code></pre>
+</div>
+</div>
+
+<p class="note">Identifiers must be unique. Use <code>"app/ServiceName"</code> prefix pattern.</p>
+
+<!------------------ LAYER TYPE ------------------>
+
+<h2>Layer Type Signature</h2>
+
+<pre><code>Layer&lt;ROut, E, RIn&gt;
+//     ↑     ↑   ↑
+//   produces  may  requires
+//   (output)  err  (input)</code></pre>
+
+<table>
+<tr><th>Param</th><th>Variance</th><th>Meaning</th></tr>
+<tr><td><code>ROut</code></td><td>Contravariant</td><td>Services this layer produces</td></tr>
+<tr><td><code>E</code></td><td>Covariant</td><td>Errors during construction</td></tr>
+<tr><td><code>RIn</code></td><td>Covariant</td><td>Services this layer needs as input</td></tr>
+</table>
+
+<p class="note">Mnemonic: <strong>R</strong>esources Output, <strong>E</strong>rrors, <strong>I</strong>nputs needed.</p>
+
+<!------------------ CONSTRUCTORS ------------------>
+
+<h2>Constructors</h2>
+
+<table>
+<tr><th>Constructor</th><th>Signature</th><th>When</th></tr>
+<tr>
+  <td><code>Layer.succeed</code></td>
+  <td class="sig"><code>(tag, implementation) &rarr; Layer&lt;I&gt;</code></td>
+  <td>No dependencies, no errors, no async</td>
+</tr>
+<tr>
+  <td><code>Layer.sync</code></td>
+  <td class="sig"><code>(tag, () =&gt; impl) &rarr; Layer&lt;I&gt;</code></td>
+  <td>Lazy construction, no deps</td>
+</tr>
+<tr>
+  <td><code>Layer.effect</code></td>
+  <td class="sig"><code>(tag, Effect&lt;S, E, R&gt;) &rarr; Layer&lt;I, E, R&gt;</code></td>
+  <td>Has dependencies (<code>yield*</code> inside), may fail, may be async</td>
+</tr>
+<tr>
+  <td><code>Layer.mock</code></td>
+  <td class="sig"><code>(tag, partial) &rarr; Layer&lt;I&gt;</code></td>
+  <td>Test mocks — only stub what you use</td>
+</tr>
+<tr>
+  <td><code>Layer.empty</code></td>
+  <td class="sig"><code>() &rarr; Layer&lt;never&gt;</code></td>
+  <td>No-op placeholder</td>
+</tr>
+</table>
+
+<pre><code>// succeed — simplest
+const ConfigLive = Layer.succeed(Config, {
+  get: Effect.succeed({ level: "INFO" })
+})
+// Layer&lt;Config, never, never&gt;
+
+// sync — lazy stateful mock
+const CounterLive = Layer.sync(Counter, () => {
+  let count = 0
+  return { get: () => Effect.succeed(count), inc: () => Effect.sync(() => void count++) }
+})
+
+// effect — with dependencies
+const LoggerLive = Layer.effect(Logger,
+  Effect.gen(function* () {
+    const config = yield* Config                // ← dependency
+    return { log: (msg) => Effect.log(`[LOG] ${msg}`) }
+  })
+)
+// Layer&lt;Logger, never, Config&gt;
+
+// mock — partial test layer
+const UserServiceTest = Layer.mock(UserService, {
+  config: { apiUrl: "test" },                   // required (non-Effect)
+  getUser: (id) => Effect.succeed({ id, name: "Test" })
+  // deleteUser, updateUser omitted → throw if called
+})</code></pre>
+
+<!------------------ COMPOSITION ------------------>
+
+<h2>Composition</h2>
+
+<table>
+<tr><th>Operation</th><th>Direction</th><th>Output</th><th>Use for</th></tr>
+<tr>
+  <td><code>Layer.merge(A, B)</code></td>
+  <td>Horizontal</td>
+  <td><code>A | B</code></td>
+  <td>Combine independent leaf services</td>
+</tr>
+<tr>
+  <td><code>A.pipe(Layer.provide(B))</code></td>
+  <td>Vertical</td>
+  <td><code>A</code> only</td>
+  <td>Hide B from output (encapsulation)</td>
+</tr>
+<tr>
+  <td><code>A.pipe(Layer.provideMerge(B))</code></td>
+  <td>Vertical + passthrough</td>
+  <td><code>A | B</code></td>
+  <td>B shared by multiple consumers</td>
+</tr>
+</table>
+
+<pre><code>// provide — B satisfies A, B hidden from output
+const LoggerWithConfig = LoggerLive.pipe(
+  Layer.provide(ConfigLive)
+)
+// Logger: Layer&lt;Logger, never, Config&gt; + Config: Layer&lt;Config, never, never&gt;
+// Result: Layer&lt;Logger,     never,    never&gt;
+
+// provideMerge — B satisfies A, B kept in output
+const LoggerWithConfig = LoggerLive.pipe(
+  Layer.provideMerge(ConfigLive)
+)
+// Result: Layer&lt;Logger | Config, never, never&gt;
+
+// merge — combine side by side, built concurrently
+const AllServices = ConfigLive.pipe(
+  Layer.merge(LoggerLive)
+)
+// Result: Layer&lt;Config | Logger, never,  Config&gt;
+//                         Logger needs Config → hole remains!</code></pre>
+
+<p class="note"><strong>Rule:</strong> Use <code>provide</code> at the declaration site.
+Close dependencies where the service is defined, not where it's consumed.</p>
+
+<!------------------ WIRING ------------------>
+
+<h2>Wiring to Effects</h2>
+
+<table>
+<tr><th>Operation</th><th>Signature</th><th>Level</th></tr>
+<tr>
+  <td><code>Effect.provide</code></td>
+  <td class="sig"><code>Effect&lt;A,E,R&gt; &rarr; Layer&lt;ROut,...&gt; &rarr; Effect&lt;A,E, R-ROut+...&gt;</code></td>
+  <td>Entry point — layer meets program</td>
+</tr>
+<tr>
+  <td><code>Effect.provideService</code></td>
+  <td class="sig"><code>Effect&lt;A,E,R&gt; &rarr; Tag &rarr; impl &rarr; Effect&lt;A,E, R-Tag&gt;</code></td>
+  <td>Quick single-service provision</td>
+</tr>
+</table>
+
+<pre><code>// Compose all layers, then provide once
+const AppLayer = LoggerLive.pipe(Layer.provide(ConfigLive))
+
+const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  yield* logger.log("hello")
+})
+
+const runnable = program.pipe(Effect.provide(AppLayer))
+// Effect&lt;void, never, Logger&gt; → Effect&lt;void, never, never&gt;
+
+Effect.runPromise(runnable)</code></pre>
+
+<p class="note"><strong>One <code>Effect.provide</code> at the top.</strong> Compose layers first, then wire in once.</p>
+
+<!------------------ SCOPED RESOURCES ------------------>
+
+<h2>Scoped Resources &amp; Cleanup</h2>
+
+<pre><code>const DatabaseLive = Layer.effect(Database,
+  Effect.gen(function* () {
+    const pool = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => createPool(url)),   // acquire
+      (pool, exit) => Effect.promise(() =>        // release
+        pool.end()
+      )
+    )
+    return { query: (sql) => Effect.tryPromise(() => pool.query(sql)) }
+  })
+)
+
+// acquireRelease auto-registers cleanup on the current Scope
+// Effect.provide → scopedWith → Scope created → Scope closes after program → cleanup runs</code></pre>
+
+<p class="note">In v4, no separate <code>Layer.scoped</code> — just use <code>Effect.acquireRelease</code> inside <code>Layer.effect</code>.</p>
+
+<!------------------ MEMOIZATION ------------------>
+
+<h2>Memoization</h2>
+
+<table>
+<tr><th>Mechanism</th><th>What</th><th>Use for</th></tr>
+<tr><td>Default</td><td>Same reference = built once</td><td>Normal operation</td></tr>
+<tr><td><code>Layer.fresh(layer)</code></td><td>Always rebuild this layer</td><td>One service must never be shared</td></tr>
+<tr><td><code>provide(layer, { local: true })</code></td><td>Entire subtree gets private MemoMap</td><td>Test isolation for a whole stack</td></tr>
+</table>
+
+<pre><code>// Footgun: parameterized constructors
+const bad = Layer.merge(
+  UserRepo.pipe(Layer.provide(postgresLayer({ url }))),  // ← different reference
+  OrderRepo.pipe(Layer.provide(postgresLayer({ url })))  // ← different reference
+) // TWO database pools!
+
+// Fix: bind to constant
+const db = postgresLayer({ url })                        // ← ONE reference
+const good = Layer.merge(
+  UserRepo.pipe(Layer.provide(db)),
+  OrderRepo.pipe(Layer.provide(db))
+) // ONE pool, shared
+
+// Fresh: force rebuild
+program.pipe(
+  Effect.provide(Layer.fresh(DatabaseLive))  // always fresh
+)</code></pre>
+
+<!------------------ TESTING ------------------>
+
+<h2>Testing</h2>
+
+<table>
+<tr><th>API</th><th>What</th></tr>
+<tr><td><code>it.effect(name, fn)</code></td><td>Run Effect test with auto-Scope + TestEnv</td></tr>
+<tr><td><code>it.layer(layer)(name, fn)</code></td><td>Share layer across suite (built once, cleanup in afterAll)</td></tr>
+<tr><td><code>it.live(name, fn)</code></td><td>Run with real runtime (no TestClock/TestConsole overrides)</td></tr>
+<tr><td><code>Layer.mock(tag, partial)</code></td><td>Partial mock — unimplemented methods throw if called</td></tr>
+</table>
+
+<pre><code>// Per-test isolation (preferred)
+it.effect("test", () =>
+  Effect.gen(function* () {
+    const db = yield* Database
+    expect(yield* db.query("...")).toEqual([...])
+  }).pipe(Effect.provide(DatabaseTest))
+)
+
+// Suite-shared layer (for expensive setup)
+layer(DatabaseLive)("shared DB", (it) => {
+  it.effect("test 1", () => ...)  // uses shared DatabaseLive
+  it.effect("test 2", () => ...)  // same instance, shared state
+})
+
+// Selective freshness in shared suite
+layer(DatabaseLive)("shared DB", (it) => {
+  it.effect("stateful test", () =>
+    Effect.gen(function* () { ... })
+      .pipe(Effect.provide(Layer.fresh(CounterLive)))
+  )
+})</code></pre>
+
+<p class="note"><strong>Golden rule:</strong> prefer per-test isolation. Only share when construction is expensive.</p>
+
+<!------------------ NAMING ------------------>
+
+<h2>Naming Conventions</h2>
+
+<table>
+<tr><th>Pattern</th><th>Meaning</th><th>Example</th></tr>
+<tr><td><code>layer</code></td><td>Primary implementation</td><td><code>Logger.layer</code></td></tr>
+<tr><td><code>layerTest</code></td><td>Test implementation</td><td><code>Logger.layerTest</code></td></tr>
+<tr><td><code>layerX</code></td><td>Variant</td><td><code>Logger.layerSqlite</code></td></tr>
+</table>
+
+<p class="note">v4 convention: generic <code>layer</code>, not v3's <code>Live</code>/<code>Default</code>.</p>
+
+<!------------------ COMMON PATTERNS ------------------>
+
+<h2>Common Patterns</h2>
+
+<pre><code>// Pattern: close deps at declaration site
+class Logger extends Context.Service&lt;Logger, {
+  readonly log: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("app/Logger") {
+  static readonly layer = Layer.effect(this,
+    Effect.gen(function* () {
+      const config = yield* Config
+      return { log: (msg) =&gt; Effect.log(`[LOG] ${msg}`) }
+    })
+  ).pipe(Layer.provide(Config.layer))  // ← closed here
+}
+// Logger.layer now has Layer&lt;Logger, never, never&gt;
+
+// Pattern: multiple services sharing one dependency
+const AppLayer = Layer.mergeAll(
+  UserRepoLive.pipe(Layer.provideMerge(DatabaseLive)),  // keep DB visible
+  OrderRepoLive.pipe(Layer.provideMerge(DatabaseLive)), // same DB instance
+  ConfigLive                                             // leaf
+)
+// Layer&lt;UserRepo | OrderRepo | Database | Config, ...&gt;
+
+// Pattern: build entire app from layers
+const program = Effect.gen(function* () {
+  yield* HttpServer.start
+  yield* Effect.never  // keep alive
+})
+
+const main = program.pipe(Effect.provide(AppLayer))
+Effect.runPromise(main)</code></pre>
+
+<footer>
+  Based on Effect v4 source (<code>packages/effect/src/Layer.ts</code>)
+  and the <a href="https://effect.website/docs/requirements-management/layers/">official docs</a>.
+  Referenced by lessons in this workspace.
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>003 &mdash; Layer.provide and Effect.provide Deep Dive</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2.2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.6rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  .flow {
+    display: flex; align-items: center; gap: 0.5rem; margin: 1rem 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    flex-wrap: wrap; justify-content: center;
+  }
+  .flow .box {
+    padding: 0.5rem 0.8rem; border-radius: 6px; border: 1px solid #cbd5e1;
+    background: #f8fafc;
+  }
+  .flow .arrow { color: #94a3b8; font-size: 1.2rem; }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #166534; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>provide Deep Dive <span style="font-weight:400;color:#94a3b8;">&mdash; The Wiring Verb</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 003 &mdash; Layer.provide, Effect.provide, and how they differ
+</p>
+
+<h2>The confusion: two different <code>.provide</code> calls</h2>
+
+<p>
+  There are two <code>provide</code> operations. They have different signatures,
+  different purposes, and work at different levels:
+</p>
+
+<table>
+<tr><th>Operation</th><th>What it connects</th><th>Level</th></tr>
+<tr>
+  <td><code>Layer.provide</code></td>
+  <td>Layer &rarr; Layer</td>
+  <td>Wiring your dependency graph</td>
+</tr>
+<tr>
+  <td><code>Effect.provide</code></td>
+  <td>Layer &rarr; Effect</td>
+  <td>Running your program with dependencies</td>
+</tr>
+</table>
+
+<p>
+  Think of building a car. <code>Layer.provide</code> is connecting the engine
+  to the chassis at the factory. <code>Effect.provide</code> is putting the key
+  in the ignition and driving.
+</p>
+
+<hr>
+
+<h2>Layer.provide: layer feeds another layer</h2>
+
+<h3>The mental model</h3>
+
+<p>
+  You have two layers:
+</p>
+
+<div class="diagram">
+  LoggerLive:  "I can make a Logger &mdash; but I need a Config first"
+               Layer&lt;Logger,        never,       Config&gt;
+                         ^^^^^^^^^   ^^^^^        ^^^^^^
+                         produces    no errors    needs this
+
+  ConfigLive:  "I can make a Config &mdash; no questions asked"
+               Layer&lt;Config,        never,       never&gt;
+</div>
+
+<p>
+  LoggerLive has a <strong>hole</strong> &mdash; it needs Config.
+  ConfigLive <strong>fills that hole</strong>.
+</p>
+
+<pre><code>//       hole-filler.pipe(feed into the one with the hole)
+const AppLayer = <span class="hl">LoggerLive.pipe(Layer.provide(ConfigLive))</span>
+</code></pre>
+
+<h3>Read it like this</h3>
+
+<div class="insight">
+  <strong>Rule:</strong> <code>A.pipe(Layer.provide(B))</code> means
+  <em>"Use B to satisfy A's dependencies."</em>
+  <br><br>
+  The layer <strong>after</strong> <code>.provide()</code> (B) feeds the layer
+  <strong>before</strong> it (A). B's output becomes A's input.
+</div>
+
+<h3>The type transformation step by step</h3>
+
+<pre><code>// Before:
+LoggerLive:  Layer&lt;Logger,  never,  <span class="hl">Config</span>&gt;
+ConfigLive:  Layer&lt;<span class="hl">Config</span>,  never,  never&gt;
+
+// LoggerLive.pipe(Layer.provide(ConfigLive))
+//                  ^^^^^^^^^^^^
+//        ConfigLive's output (Config) cancels out
+//        LoggerLive's requirement (Config)
+
+// After:
+AppLayer:    Layer&lt;Logger,  never,  never&gt;
+//            Logger still produced
+//            Config requirement &rarr; gone (satisfied by ConfigLive)
+</code></pre>
+
+<h3>Three-layer example</h3>
+
+<pre><code>class Config extends Context.Service&lt;Config, {
+  readonly get: Effect.Effect&lt;{ level: string }&gt;
+}&gt;()("Config") {}
+const ConfigLive = Layer.succeed(Config, {
+  get: Effect.succeed({ level: "INFO" })
+})
+
+class Logger extends Context.Service&lt;Logger, {
+  readonly log: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Logger") {}
+const LoggerLive = Layer.effect(Logger,
+  Effect.gen(function* () {
+    const config = yield* Config
+    return { log: (msg) =&gt; Effect.log(`[LOG] ${msg}`) }
+  })
+)
+
+class Reporter extends Context.Service&lt;Reporter, {
+  readonly report: (err: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Reporter") {}
+const ReporterLive = Layer.effect(Reporter,
+  Effect.gen(function* () {
+    const logger = yield* Logger
+    return { report: (err) =&gt; logger.log(`ERROR: ${err}`) }
+  })
+)
+
+// Reporter needs Logger, Logger needs Config.
+// Wire them: innermost dependency first, then outward.
+
+const AppLayer = ReporterLive.pipe(
+  Layer.provide(LoggerLive),   // fill LoggerLive's Config hole
+  Layer.provide(ConfigLive)    // ConfigLive has no holes
+)
+// Type: Layer&lt;Reporter, never, never&gt;
+
+// Without the middle provide, you'd get a type error:
+// ReporterLive.pipe(Layer.provide(ConfigLive))
+//    Error: ConfigLive doesn't satisfy ReporterLive's Logger requirement
+</code></pre>
+
+<div class="diagram">
+  ReporterLive  needs Logger
+       |         Layer.provide(LoggerLive)
+       v
+  LoggerLive    needs Config
+       |         Layer.provide(ConfigLive)
+       v
+  ConfigLive    needs nothing (leaf node)
+
+  Result: Layer&lt;Reporter, never, never&gt;
+          All holes filled!
+</div>
+
+<hr>
+
+<h2>Effect.provide: layer feeds an effect</h2>
+
+<p>
+  Once your layer has <em>no unfilled requirements</em> (<code>RIn = never</code>),
+  you attach it to an effect to make it runnable.
+</p>
+
+<pre><code>const program = Effect.gen(function* () {
+  const reporter = yield* Reporter
+  yield* reporter.report("disk full")
+})
+// Type: Effect&lt;void, never, <span class="hl">Reporter</span>&gt;
+//                         "I need Reporter to run"
+
+const runnable = program.pipe(
+  Effect.provide(AppLayer)
+)
+// Type: Effect&lt;void, never, <span class="hl">never</span>&gt;
+//                    Reporter requirement &rarr; satisfied!
+
+Effect.runPromise(runnable)</code></pre>
+
+<h3>What Effect.provide does behind the scenes</h3>
+
+<ol style="margin:0.5rem 0 0.5rem 1.5rem; line-height:1.8;">
+  <li><strong>Build</strong> the layer &mdash; run all generators in <code>Layer.effect</code>, acquire resources, etc.</li>
+  <li><strong>Add</strong> the resulting services to a context</li>
+  <li><strong>Run</strong> the program with that context &mdash; so all <code>yield* Tag</code> calls find their service</li>
+  <li><strong>Clean up</strong> &mdash; when the program finishes, release any scoped resources</li>
+</ol>
+
+<pre><code>// Approximate what Effect.provide does internally:
+Effect.provide = (program, layer) =>
+  Effect.gen(function* () {
+    const context = yield* Layer.build(layer)    // 1. build the layer
+    yield* program.pipe(                         // 3. run with that context
+      core.provideContext(context)               // 2. add services to context
+    )
+    // 4. cleanup happens automatically via Scope
+  })</code></pre>
+
+<h2>Side by side</h2>
+
+<table>
+<tr>
+  <th style="width:50%">Layer.provide</th>
+  <th style="width:50%">Effect.provide</th>
+</tr>
+<tr>
+  <td>
+    <code>needyLayer.pipe(Layer.provide(providerLayer))</code>
+    <br><br>
+    Connects <strong>layer to layer</strong>
+    <br><br>
+    Output: a <strong>new Layer</strong> with fewer requirements
+    <br><br>
+    Used during <strong>dependency graph construction</strong>
+    <br><br>
+    Analogy: plugging a power cord into a generator
+  </td>
+  <td>
+    <code>program.pipe(Effect.provide(layer))</code>
+    <br><br>
+    Connects <strong>layer to effect</strong>
+    <br><br>
+    Output: an <strong>Effect</strong> with fewer requirements
+    <br><br>
+    Used at the <strong>entry point</strong> of your application
+    <br><br>
+    Analogy: turning the key to start the engine
+  </td>
+</tr>
+</table>
+
+<div class="insight">
+  <strong>One <code>provide</code> per program.</strong>
+  Compose all your layers first (using <code>Layer.provide</code>), then
+  do a single <code>Effect.provide</code> at the top of your application.
+  Scattering <code>Effect.provide</code> calls throughout your codebase
+  hides the dependency graph.
+</div>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary sources</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/layers/#combining-layers">Combining Layers &mdash; Effect Docs</a>
+  &middot;
+  <a href="https://effect.website/docs/requirements-management/layers/#providing-a-layer-to-an-effect">Providing a Layer to an Effect</a>
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> Given <code>A.pipe(Layer.provide(B))</code>, which is true?</p>
+  <label><input type="radio" name="q1" value="a"> a) B's output satisfies A's requirements</label>
+  <label><input type="radio" name="q1" value="b"> b) A's output satisfies B's requirements</label>
+  <label><input type="radio" name="q1" value="c"> c) Both A and B produce the same output</label>
+  <label><input type="radio" name="q1" value="d"> d) A and B are merged horizontally</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> What happens if you call <code>Effect.provide</code> with a layer that still has unfilled requirements?</p>
+  <label><input type="radio" name="q2" value="a"> a) It works fine &mdash; requirements are optional</label>
+  <label><input type="radio" name="q2" value="b"> b) The effect runs but logs a warning</label>
+  <label><input type="radio" name="q2" value="c"> c) TypeScript compile error</label>
+  <label><input type="radio" name="q2" value="d"> d) A runtime error when the missing service is accessed</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+
+<form id="q3" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q3.</strong> <code>Layer.provide</code> : <code>Layer &rarr; Layer</code> :: <code>Effect.provide</code> : ?</p>
+  <label><input type="radio" name="q3" value="a"> a) <code>Layer &rarr; Layer</code></label>
+  <label><input type="radio" name="q3" value="b"> b) <code>Effect &rarr; Effect</code></label>
+  <label><input type="radio" name="q3" value="c"> c) <code>Layer &rarr; Effect</code></label>
+  <label><input type="radio" name="q3" value="d"> d) <code>Effect &rarr; Layer</code></label>
+  <button type="button" onclick="checkQ3()">Check</button>
+  <div class="feedback" id="q3-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 003 &mdash; Previous: <a href="0002-layer-construction.html">002 &mdash; Layer Construction</a>
+  &middot; Next: <a href="0004-layer-merge.html">004 &mdash; Layer.merge &amp; provideMerge</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "a"); }
+function checkQ2() { check("q2", "c"); }
+function checkQ3() { check("q3", "c"); }
+</script>
+
+</body>
+</html>

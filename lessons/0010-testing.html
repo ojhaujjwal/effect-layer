@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>010 &mdash; Testing with Layers</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.6; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.8rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.85rem 1rem; overflow-x: auto; margin: 0.7rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.5;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .bad { border-left: 3px solid #ef4444; padding-left: 0.8rem; margin: 0.7rem 0; }
+  .good { border-left: 3px solid #22c55e; padding-left: 0.8rem; margin: 0.7rem 0; }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 0.8rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #166534; }
+
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.92rem; }
+  th { background: #f1f5f9; text-align: left; padding: 0.35rem 0.55rem; }
+  td { padding: 0.35rem 0.55rem; border-bottom: 1px solid #f1f5f9; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>Testing with Layers</h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 010 &mdash; Mock layers, test isolation, and the vitest integration
+</p>
+
+<h2>The problem Layer solves for testing</h2>
+
+<p>
+  Without Layer, testing code that depends on Database, Logger, etc. means either:
+  creating real resources (slow, fragile) or manually threading mock objects through
+  every function signature. With Layer, you swap the <em>whole dependency graph</em>
+  in one place.
+</p>
+
+<div class="diagram" style="text-align:left;font-size:0.8rem;line-height:1.6;">
+  Production:                  Testing:
+  program                      program
+     │                            │
+     │ Effect.provide(AppLayer)    │ Effect.provide(TestLayer)
+     │                            │
+     ├─ ConfigLive  (real)        ├─ ConfigTest  (fake)
+     ├─ LoggerLive  (real)        ├─ LoggerTest  (silent)
+     ├─ DatabaseLive (pool)       ├─ DatabaseTest (in-memory)
+     └─ UserRepoLive (real)       └─ UserRepoLive (uses test deps)
+</div>
+
+<h2>Pattern #1: Layer.mock — partial mocks</h2>
+
+<p>
+  The simplest approach. Only implement the methods you actually use in your test.
+  Any unimplemented Effect methods will throw at runtime, loudly, so you know
+  exactly what's missing:
+</p>
+
+<pre><code>import { Context, Effect, Layer } from "effect"
+
+class UserService extends Context.Service&lt;UserService, {
+  readonly config: { apiUrl: string }             // non-Effect: required
+  readonly getUser: (id: string) =&gt; Effect.Effect&lt;unknown, Error&gt;
+  readonly deleteUser: (id: string) =&gt; Effect.Effect&lt;void, Error&gt;
+  readonly updateUser: (id: string, d: object) =&gt; Effect.Effect&lt;unknown, Error&gt;
+}&gt;()("UserService") {}
+
+// Only implement what's needed — the rest throws if called
+const UserServiceTest = Layer.mock(UserService, {
+  config: { apiUrl: "https://test-api" },         // required (non-Effect)
+  getUser: (id) =&gt; Effect.succeed({ id, name: "Test" }) // mock
+  // deleteUser &amp; updateUser omitted → throw UnimplementedError if called
+})</code></pre>
+
+<p>
+  <code>Layer.mock</code> uses <code>PartialEffectful&lt;S&gt;</code>: Effect
+  functions and Stream/Channel values become optional so you only stub what's
+  exercised. Non-Effect properties (like <code>config</code>) are still required.
+</p>
+
+<h2>Pattern #2: Manual test layers</h2>
+
+<p>
+  When you need mutable state or setup logic, a manual test layer gives you full
+  control:
+</p>
+
+<pre><code>class Database extends Context.Service&lt;Database, {
+  readonly query: (sql: string) =&gt; Effect.Effect&lt;readonly unknown[]&gt;
+}&gt;()("Database") {}
+
+// In-memory database for testing
+const DatabaseTest = Layer.succeed(Database, {
+  query: (sql) =&gt; Effect.succeed([
+    { id: 1, name: "Alice" },
+    { id: 2, name: "Bob" }
+  ])
+})
+
+// Or with mutable state
+const DatabaseTest = Layer.sync(Database, () =&gt; {
+  let records: Record&lt;string, unknown&gt;[] = []
+  return {
+    query: () =&gt; Effect.succeed(records),
+    execute: (sql: string) =&gt; {
+      if (sql.includes("INSERT")) records.push({})
+      return Effect.void
+    }
+  }
+})</code></pre>
+
+<h2>Pattern #3: it.effect — the test runner</h2>
+
+<p>
+  <code>it.effect</code> from <code>@effect/vitest</code> runs an Effect in a
+  test. It auto-provides Scope and test services (TestClock, TestConsole):
+</p>
+
+<pre><code>import { it } from "@effect/vitest"
+import { Effect } from "effect"
+
+it.effect("fetches user by id", () =&gt;
+  Effect.gen(function* () {
+    const db = yield* Database
+    const user = yield* db.query("SELECT * FROM users WHERE id = '1'")
+    expect(user).toEqual([{ id: 1, name: "Alice" }])
+  }).pipe(
+    Effect.provide(DatabaseTest)  // ← fresh layer per test
+  )
+)</code></pre>
+
+<div class="insight">
+  <strong>Each <code>it.effect</code> runs with a fresh Scope.</strong>
+  Layers provided inside the test body are rebuilt for each test. State from
+  one test never leaks into the next. This is the default &mdash; no
+  configuration needed.
+</div>
+
+<h2>Pattern #4: it.layer — suite-shared layers</h2>
+
+<p>
+  When a layer is expensive to build (real database, large fixture), share it
+  across a test suite with <code>it.layer</code>:
+</p>
+
+<pre><code>import { it, layer } from "@effect/vitest"
+import { Context, Effect, Layer } from "effect"
+
+class Counter extends Context.Service&lt;Counter, {
+  readonly get: Effect.Effect&lt;number&gt;
+  readonly inc: Effect.Effect&lt;void&gt;
+}&gt;()("Counter") {}
+
+const CounterLive = Layer.sync(Counter, () =&gt; {
+  let count = 0
+  return {
+    get: () =&gt; Effect.succeed(count),
+    inc: () =&gt; Effect.sync(() =&gt; void count++)
+  }
+})
+
+// Without it.layer: each test gets its own Counter (count starts at 0)
+it.effect("starts at 0", () =&gt;
+  Effect.gen(function* () {
+    const c = yield* Counter
+    expect(yield* c.get).toBe(0)
+  }).pipe(Effect.provide(CounterLive))
+)
+
+it.effect("increments to 1", () =&gt;
+  Effect.gen(function* () {
+    const c = yield* Counter
+    yield* c.inc
+    expect(yield* c.get).toBe(1) // passes — starts fresh
+  }).pipe(Effect.provide(CounterLive))
+)
+
+// WITH it.layer: all tests share the same Counter instance
+layer(CounterLive)("shared counter", (it) =&gt; {
+  it.effect("starts at 0", () =&gt;
+    Effect.gen(function* () {
+      const c = yield* Counter
+      expect(yield* c.get).toBe(0)
+    })
+  )
+
+  it.effect("increments to 1", () =&gt;
+    Effect.gen(function* () {
+      const c = yield* Counter
+      yield* c.inc
+      expect(yield* c.get).toBe(1) // passes — state is shared
+    })
+  )
+  // Warning: ordering matters! Tests depend on shared state.
+})</code></pre>
+
+<table>
+<tr><th></th><th>Per-test (default)</th><th>Suite-shared (it.layer)</th></tr>
+<tr><td>Layer built</td><td>Every test</td><td>Once before all tests</td></tr>
+<tr><td>Cleanup</td><td>After each test</td><td>After all tests (afterAll)</td></tr>
+<tr><td>State isolation</td><td>Yes — no cross-test leaks</td><td>No — state persists between tests</td></tr>
+<tr><td>Use for</td><td>Cheap layers, stateful tests</td><td>Expensive layers (DB, fixtures)</td></tr>
+</table>
+
+<h2>Pattern #5: Layer.fresh in shared suites</h2>
+
+<p>
+  When using <code>it.layer</code>, you might want most layers shared but
+  <em>one</em> layer rebuilt per test:
+</p>
+
+<pre><code>layer(DatabaseLive)("with shared DB", (it) =&gt; {
+  it.effect("test 1", () =&gt;
+    Effect.gen(function* () {
+      const counter = yield* Counter
+      yield* counter.inc
+      expect(yield* counter.get).toBe(1)
+    }).pipe(Effect.provide(Layer.fresh(CounterLive)))
+    // ↑ Counter is fresh, Database is shared
+  )
+
+  it.effect("test 2 — counter starts at 0 again", () =&gt;
+    Effect.gen(function* () {
+      const counter = yield* Counter
+      expect(yield* counter.get).toBe(0) // passes — fresh ()
+    }).pipe(Effect.provide(Layer.fresh(CounterLive)))
+  )
+})</code></pre>
+
+<h2>Pattern #6: it.live — without test services</h2>
+
+<p>
+  <code>it.live</code> runs tests with the real runtime services (real clock,
+  real console), no TestEnv overrides. Useful for integration tests:
+</p>
+
+<pre><code>it.live("integration test", () =&gt;
+  Effect.gen(function* () {
+    const db = yield* Database
+    const result = yield* db.query("SELECT NOW()")
+    expect(result).toBeDefined() // real query against real DB
+  }).pipe(Effect.provide(RealDatabaseLayer))
+)</code></pre>
+
+<h2>The testing toolkit summary</h2>
+
+<table>
+<tr><th>Tool</th><th>What it does</th><th>When</th></tr>
+<tr>
+  <td><code>Layer.mock(tag, partial)</code></td>
+  <td>Partial mock — only stub what you use</td>
+  <td>Fast unit tests</td>
+</tr>
+<tr>
+  <td><code>Layer.succeed(tag, impl)</code></td>
+  <td>Full test implementation</td>
+  <td>In-memory services</td>
+</tr>
+<tr>
+  <td><code>Layer.sync(tag, factory)</code></td>
+  <td>Lazy stateful mock</td>
+  <td>Stateful test services</td>
+</tr>
+<tr>
+  <td><code>it.effect(name, fn)</code></td>
+  <td>Run Effect in test, auto-Scope</td>
+  <td>Every test</td>
+</tr>
+<tr>
+  <td><code>it.layer(layer)(name, fn)</code></td>
+  <td>Share layer across suite</td>
+  <td>Expensive setup</td>
+</tr>
+<tr>
+  <td><code>Layer.fresh(layer)</code></td>
+  <td>Force rebuild in shared suite</td>
+  <td>Stateful services in shared suite</td>
+</tr>
+<tr>
+  <td><code>it.live(name, fn)</code></td>
+  <td>No TestEnv, real runtime</td>
+  <td>Integration tests</td>
+</tr>
+</table>
+
+<div class="insight">
+  <strong>Golden rule:</strong> Prefer per-test layers (<code>it.effect</code> +
+  <code>Effect.provide</code>) unless you have a real reason to share. Test
+  isolation prevents ordering-dependent failures. Only reach for
+  <code>it.layer</code> when layer construction is genuinely expensive.
+</div>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/testing/testclock/">Testing &mdash; Effect Docs</a>
+  &middot;
+  <a href="https://www.effect.solutions/services-and-layers">Effect Solutions: Services &amp; Layers</a>
+</p>
+
+<div class="nav">
+  Lesson 010 &mdash; Previous: <a href="0009-fiber-integration.html">009 &mdash; Fiber Integration</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+</body>
+</html>

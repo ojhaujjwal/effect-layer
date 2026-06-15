@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>004 &mdash; Layer.merge and Layer.provideMerge</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.92rem; }
+  th { background: #f1f5f9; text-align: left; padding: 0.35rem 0.55rem; }
+  td { padding: 0.35rem 0.55rem; border-bottom: 1px solid #f1f5f9; }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #166534; }
+
+  .compare { display: flex; gap: 0.8rem; margin: 1rem 0; }
+  .compare > div { flex: 1; padding: 0.7rem; border-radius: 6px; font-size: 0.88rem; }
+  .compare .left { background: #eff6ff; border: 1px solid #bfdbfe; }
+  .compare .right { background: #fef3c7; border: 1px solid #fde68a; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>merge &amp; provideMerge <span style="font-weight:400;color:#94a3b8;">&mdash; Horizontal Composition</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 004 &mdash; Merging independent layers and passing dependencies through
+</p>
+
+<h2>Two kinds of composition</h2>
+
+<p>
+  So far you've seen <strong>vertical</strong> composition: one layer feeds another's
+  dependencies. But what if two layers are <strong>independent</strong> (neither needs
+  the other)? You need to combine them side by side.
+</p>
+
+<div class="diagram">
+  Vertical (provide):          Horizontal (merge):
+
+    A (needs B)          A (independent)     B (independent)
+    │                           │                │
+    │ Layer.provide(B)          └──────┬─────────┘
+    ▼                                  │
+    A' (B satisfied)              Layer.merge
+                                  │
+                                  ▼
+                              A + B together
+</div>
+
+<h2>Layer.merge: combine independent layers</h2>
+
+<p>
+  Two services that don't depend on each other &mdash; but your program needs both.
+  <code>Layer.merge</code> bundles them into one layer.
+</p>
+
+<pre><code>class Config extends Context.Service&lt;Config, {
+  readonly get: Effect.Effect&lt;{ level: string }&gt;
+}&gt;()("Config") {}
+const ConfigLive = Layer.succeed(Config, {
+  get: Effect.succeed({ level: "INFO" })
+})
+// Layer&lt;Config, never, never&gt;
+
+class Metrics extends Context.Service&lt;Metrics, {
+  readonly track: (event: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Metrics") {}
+const MetricsLive = Layer.succeed(Metrics, {
+  track: (event) =&gt; Effect.log(`[METRICS] ${event}`)
+})
+// Layer&lt;Metrics, never, never&gt;
+
+// Both are leaf nodes &mdash; no dependencies &mdash; combine them:
+const Infrastructure = ConfigLive.pipe(
+  Layer.merge(MetricsLive)
+)
+// Layer&lt;Config | Metrics, never, never&gt;
+//          ^^^^^^^^^^^
+//    Both services in the output!</code></pre>
+
+<h3>What merge does to the types</h3>
+
+<pre><code>ConfigLive:   Layer&lt;Config,  never, never&gt;
+MetricsLive:  Layer&lt;Metrics, never, never&gt;
+                       │          │
+                       └─ merge ──┘
+                            │
+                            ▼
+              Layer&lt;Config | Metrics, never, never&gt;
+              //      ^^^^^^  ^^^^^^^  union of outputs
+</code></pre>
+
+<div class="insight">
+  <strong>Key:</strong> <code>merge</code> is horizontal. Both outputs appear in the result.
+  Both layers are built <strong>concurrently</strong> (in parallel), not sequentially.
+  Neither knows about the other.
+</div>
+
+<h2>The four composition operations compared</h2>
+
+<table>
+<tr>
+  <th>Operation</th><th>Direction</th><th>Output contains</th><th>Use for</th>
+</tr>
+<tr>
+  <td><code>merge</code></td>
+  <td>Horizontal</td>
+  <td>Both layers' services</td>
+  <td>Combining independent leaf services</td>
+</tr>
+<tr>
+  <td><code>provide</code></td>
+  <td>Vertical</td>
+  <td>Only the consumer's services</td>
+  <td>Hiding implementation details</td>
+</tr>
+<tr>
+  <td><code>provideMerge</code></td>
+  <td>Vertical</td>
+  <td>Both: consumer + dependency</td>
+  <td>Test stacks, shared dependencies</td>
+</tr>
+</table>
+
+<h2>Layer.provideMerge: provide AND keep the dependency</h2>
+
+<p>
+  <code>provide</code> hides the dependency from the output. But sometimes you
+  <em>want</em> the dependency to remain visible &mdash; especially when building
+  test stacks where multiple downstream layers share the same upstream.
+</p>
+
+<div class="compare">
+<div class="left">
+<strong>Layer.provide</strong>
+<pre style="font-size:0.8rem;margin:0.4rem 0;padding:0.5rem;">provides Logger
+satisfies Config
+
+Logger   &larr; hides Config
+ ▼
+visible
+</pre>
+</div>
+<div class="right">
+<strong>Layer.provideMerge</strong>
+<pre style="font-size:0.8rem;margin:0.4rem 0;padding:0.5rem;">provides Logger AND Config
+satisfies Config
+
+Logger + Config
+  ▼         ▼
+both visible
+</pre>
+</div>
+</div>
+
+<pre><code>// LoggerLive: Layer&lt;Logger, never, Config&gt;
+// ConfigLive: Layer&lt;Config, never, never&gt;
+
+// provide: Config is consumed and hidden
+LoggerLive.pipe(Layer.provide(ConfigLive))
+// Layer&lt;Logger, never, never&gt;
+//        ^^^^^^  Config gone from output
+
+// provideMerge: Config is consumed AND passed through
+LoggerLive.pipe(Layer.provideMerge(ConfigLive))
+// Layer&lt;Logger | Config, never, never&gt;
+//        ^^^^^^^^^^^^^^  Both in output!</code></pre>
+
+<h3>When provideMerge matters</h3>
+
+<p>
+  A test stack where a database is shared by multiple services:
+</p>
+
+<pre><code>class Database extends Context.Service&lt;Database, {
+  readonly query: (sql: string) =&gt; Effect.Effect&lt;unknown[]&gt;
+}&gt;()("Database") {}
+
+class UserRepo extends Context.Service&lt;UserRepo, {
+  readonly getById: (id: string) =&gt; Effect.Effect&lt;unknown&gt;
+}&gt;()("UserRepo") {}
+
+class OrderRepo extends Context.Service&lt;OrderRepo, {
+  readonly getById: (id: string) =&gt; Effect.Effect&lt;unknown&gt;
+}&gt;()("OrderRepo") {}
+
+// UserRepo needs Database, OrderRepo also needs Database.
+// Both must share the SAME Database instance.
+
+const TestLayers = Layer.merge(
+  UserRepoLive.pipe(Layer.provideMerge(DatabaseLive)),
+  OrderRepoLive.pipe(Layer.provideMerge(DatabaseLive))
+)
+// Layer&lt;UserRepo | OrderRepo | Database, never, never&gt;
+
+// Without provideMerge, Database would vanish after the first provide,
+// and the second repo couldn't see it. With provideMerge, Database
+// is visible to the merge, so the layer memoizer shares it.</code></pre>
+
+<div class="insight">
+  <strong>Why this works:</strong> Because of <em>layer memoization</em> &mdash; the
+  same layer instance (DatabaseLive) is built only once. Even though it appears
+  in two <code>provideMerge</code> calls, the MemoMap deduplicates it. Both
+  repos get the same database connection.
+</div>
+
+<h2>The full composition toolkit</h2>
+
+<div class="diagram">
+      ┌─────────────────────────────────┐
+      │  Your dependency graph           │
+      │                                  │
+      │  Horizontal edges: merge         │
+      │    A──merge──B    "I need both"  │
+      │                                  │
+      │  Vertical edges: provide         │
+      │    A──provide──B  "A needs B"    │
+      │                                  │
+      │  Vertical + pass-through:        │
+      │    A──provideMerge──B            │
+      │    "A needs B, keep B visible"   │
+      └─────────────────────────────────┘
+</div>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/layers/#merging-layers">Merging Layers &mdash; Effect Docs</a>
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> <code>Layer.merge(A, B)</code> produces a layer whose output type is:</p>
+  <label><input type="radio" name="q1" value="a"> a) Just A's output (B is hidden)</label>
+  <label><input type="radio" name="q1" value="b"> b) Just B's output (A is hidden)</label>
+  <label><input type="radio" name="q1" value="c"> c) Neither &mdash; merge is only for runtime</label>
+  <label><input type="radio" name="q1" value="d"> d) A | B &mdash; both services are in the output</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> <code>provideMerge</code> differs from <code>provide</code> because:</p>
+  <label><input type="radio" name="q2" value="a"> a) It builds layers sequentially instead of concurrently</label>
+  <label><input type="radio" name="q2" value="b"> b) The dependency layer's output appears in the result layer's output</label>
+  <label><input type="radio" name="q2" value="c"> c) It handles errors differently</label>
+  <label><input type="radio" name="q2" value="d"> d) It only works with two layers, not more</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 004 &mdash; Previous: <a href="0003-provide-deep-dive.html">003 &mdash; provide Deep Dive</a>
+  &middot; Next: <a href="0005-memoization.html">005 &mdash; Layer Memoization</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "d"); }
+function checkQ2() { check("q2", "b"); }
+</script>
+
+</body>
+</html>

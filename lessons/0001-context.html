@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>001 &mdash; Context: How Services Reach Your Code</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 720px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2.2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.6rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  .compare { display: flex; gap: 1rem; margin: 1rem 0; }
+  .compare > div { flex: 1; padding: 0.8rem; border-radius: 6px; font-size: 0.88rem; }
+  .compare .bad { background: #fef2f2; border: 1px solid #fecaca; }
+  .compare .good { background: #f0fdf4; border: 1px solid #bbf7d0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.92rem; }
+  th { background: #f1f5f9; text-align: left; padding: 0.35rem 0.55rem; }
+  td { padding: 0.35rem 0.55rem; border-bottom: 1px solid #f1f5f9; }
+  tr:nth-child(even) td { background: #fafafa; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  blockquote {
+    border-left: 3px solid #ddd6fe; margin: 0.9rem 0; padding: 0.4rem 0.9rem;
+    color: #4c1d95; font-style: italic; background: #f5f3ff;
+    border-radius: 0 6px 6px 0; font-size: 0.94rem;
+  }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+
+  .two-col { display: flex; gap: 1.5rem; margin: 1rem 0; }
+  .two-col > div { flex: 1; }
+
+  @media (max-width: 600px) {
+    .compare, .two-col { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Context <span style="font-weight:400;color:#94a3b8;">&mdash; How Services Reach Your Code</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 001 &mdash; What Context is, how services are stored, and how <code>yield*</code> retrieves them
+</p>
+
+<h2>The problem: passing services around</h2>
+
+<p>
+  Imagine every function that needs a database has to accept it as a parameter.
+  And every function calling <em>that</em> function must thread it through too.
+  This is the <strong>dependency threading</strong> problem:
+</p>
+
+<pre><code>function getUser(id: string, db: Database) {
+  return db.query("SELECT * FROM users WHERE id = ?", [id])
+}
+
+function handleRequest(req: Request, db: Database, logger: Logger) {
+  logger.log("handling request")
+  const user = getUser(req.params.id, db) // threading db through
+  // ...
+}
+
+// At the top, you need all services wired
+handleRequest(req, dbInstance, loggerInstance)</code></pre>
+
+<p>
+  This doesn't scale. You either thread everything manually, or bundle services
+  into a grab-bag "environment" object that has no type safety.
+</p>
+
+<div class="compare">
+<div class="bad">
+<strong>&cross; Manual threading</strong>
+<p>Every function carries all dependencies. Adding a service means changing
+every function signature in the chain.</p>
+</div>
+<div class="good">
+<strong>&check; Context</strong>
+<p>Functions declare <em>which</em> services they need via types. The runtime
+provides them automatically. Adding a service only changes the functions
+that actually use it.</p>
+</div>
+</div>
+
+<h2>What Context actually is</h2>
+
+<p>
+  A <code>Context</code> is a <strong>typed heterogeneous map</strong>. At
+  runtime, it's just a <code>Map&lt;string, any&gt;</code>. At the type level, it
+  tracks <em>exactly which services are present</em>.
+</p>
+
+<div class="diagram">
+Context&lt;Services&gt;
+
+  Runtime: Map {                    Type level:
+    "Database" &rarr; { query: ... }     Services = Database | Logger | Config
+    "Logger"   &rarr; { log: ...   }     ^-- tracked by the type system
+    "Config"   &rarr; { port: ...  }     Can't compile if a needed service is missing
+  }
+</div>
+
+<h2>Step 1: Define a service tag</h2>
+
+<p>
+  A <strong>tag</strong> is the key into context. It's an identifier (a string)
+  plus a <strong>Shape</strong> describing the service's interface. In v4, use
+  <code>Context.Service</code>:
+</p>
+
+<pre><code>import { Context, Effect } from "effect"
+
+// Function-style (simplest):
+const Random = Context.Service&lt;{
+  readonly next: Effect.Effect&lt;number&gt;
+}&gt;("MyRandomService")
+
+// Class-style (preferred for larger apps):
+class Database extends Context.Service&lt;Database, {
+  readonly query: (sql: string) =&gt; Effect.Effect&lt;unknown[]&gt;
+  readonly execute: (sql: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("Database") {}
+</code></pre>
+
+<p>
+  The tag itself <em>is</em> an Effect. When you <code>yield* Database</code>,
+  you're telling the runtime: "look up <code>"Database"</code> in the current
+  context and give me the value stored there."
+</p>
+
+<blockquote>
+  A tag is a typed key. The string <code>"Database"</code> is the runtime
+  identity. The Shape (<code>{ query, execute }</code>) is the compile-time
+  contract. The tag bridges the two.
+</blockquote>
+
+<h2>Step 2: Use a service via yield*</h2>
+
+<p>
+  Inside <code>Effect.gen</code>, <code>yield*</code> extracts the service from
+  context. The type of the enclosing effect automatically gains the service's
+  identifier in its <code>R</code> parameter:
+</p>
+
+<pre><code>const program = Effect.gen(function* () {
+  const db = yield* Database      // Look up "Database" in context
+  const users = yield* db.query("SELECT * FROM users")
+  return users
+})
+// Type: Effect&lt;unknown[], never, <strong>Database</strong>&gt;
+//                                   ^^^^^^^^
+//                      "I need a Database to run"
+</code></pre>
+
+<h2>Step 3: Provide a service</h2>
+
+<p>
+  Before you can run an effect that needs a service, you must <strong>provide</strong>
+  an implementation. The simplest way is <code>Effect.provideService</code>:
+</p>
+
+<pre><code>import { Effect, Context } from "effect"
+
+const runnable = program.pipe(
+  Effect.provideService(Database, {
+    query: (sql) =&gt; Effect.succeed([{ id: 1, name: "Alice" }]),
+    execute: (sql) =&gt; Effect.succeed(undefined)
+  })
+)
+// Type: Effect&lt;unknown[], never, <strong>never</strong>&gt;
+//                         Database requirement &rarr; satisfied
+</code></pre>
+
+<h2>The three concepts in one table</h2>
+
+<table>
+<tr><th>Concept</th><th>What it is</th><th>Analogy</th></tr>
+<tr>
+  <td><strong>Service</strong></td>
+  <td>A reusable component with a specific interface</td>
+  <td>The <em>thing</em> you need (database, logger, etc.)</td>
+</tr>
+<tr>
+  <td><strong>Tag</strong></td>
+  <td>Unique identifier + type describing the service</td>
+  <td>The <em>key</em> on your keyring</td>
+</tr>
+<tr>
+  <td><strong>Context</strong></td>
+  <td>Typed map from tags to service values</td>
+  <td>The <em>keyring</em> holding all keys and their services</td>
+</tr>
+</table>
+
+<h2>What happens inside Effect.gen when you yield* a tag</h2>
+
+<p>
+  This is the core mechanism you need to internalize. When you write:
+</p>
+
+<pre><code>Effect.gen(function* () {
+  const db = yield* Database
+  // ...
+})</code></pre>
+
+<p>
+  The generator runtime does this behind the scenes:
+</p>
+
+<ol style="margin:0.5rem 0 0.5rem 1.5rem; line-height:1.7;">
+  <li>Pause the generator at <code>yield* Database</code></li>
+  <li>Look at the current fiber's context (a <code>Context</code> value)</li>
+  <li>Call <code>context.mapUnsafe.get("Database")</code></li>
+  <li>If found: resume the generator with the service value</li>
+  <li>If missing: the type system would have caught this <em>before</em> runtime</li>
+</ol>
+
+<h2>Building Contexts by hand</h2>
+
+<p>
+  You rarely build Contexts manually (Layer does it for you), but
+  understanding the raw API clarifies what's happening:
+</p>
+
+<pre><code>import { Context } from "effect"
+
+class Config extends Context.Service&lt;Config, {
+  readonly port: number
+}&gt;()("Config") {}
+
+// Create a context with one service
+const ctx1 = Context.make(Config, { port: 8080 })
+// Context&lt;Config&gt;
+
+// Add another service
+const ctx2 = Context.add(ctx1, Database, {
+  query: (sql) =&gt; Effect.succeed([]),
+  execute: (sql) =&gt; Effect.succeed(undefined)
+})
+// Context&lt;Config | Database&gt;
+
+// Retrieve a service
+const cfg = Context.get(ctx2, Config) // { port: 8080 }
+</code></pre>
+
+<p>
+  <code>Context.make</code> creates a context with one service.
+  <code>Context.add</code> adds another. <code>Context.get</code> retrieves
+  by tag. <code>Context.mergeAll</code> combines multiple contexts.
+  <code>Context.empty()</code> creates an empty one.
+</p>
+
+<h2>The effect-channel: tags are also Effects</h2>
+
+<p>
+  A tag satisfies the <code>Effect&lt;Shape, never, Identifier&gt;</code>
+  interface. This is why you can <code>yield*</code> it:
+</p>
+
+<pre><code>// A tag IS an Effect:
+class Database extends Context.Service&lt;Database, Shape&gt;()("Database") {}
+//    satisfies Effect&lt;Shape, never, Database&gt;
+
+// So this works:
+const db = yield* Database        // Same mechanism as yield* anyEffect
+const x  = yield* Effect.succeed(42) // Both retrieve from context / produce value
+</code></pre>
+
+<p>
+  When the runtime encounters <code>yield* tag</code>, it retrieves the service
+  from the fiber's context (or fails with a type error at compile time if the
+  service was never provided).
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/services/">Managing Services &mdash; Effect Documentation</a>
+</p>
+
+<h2>Whats next</h2>
+<p>
+  Context answers "how are services stored and retrieved?" Layer answers "how
+  are services <em>constructed</em> when they have their own dependencies?"
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+<p style="margin-bottom:0.5rem;font-size:0.88rem;">
+  Answer from memory.
+</p>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> A <code>Context</code> is best described as:</p>
+  <label><input type="radio" name="q1" value="a"> a) A dependency injection framework like NestJS</label>
+  <label><input type="radio" name="q1" value="b"> b) A typed heterogeneous map from service keys to service values</label>
+  <label><input type="radio" name="q1" value="c"> c) A container for managing asynchronous side effects</label>
+  <label><input type="radio" name="q1" value="d"> d) A global singleton that stores all application state</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> When you write <code>const db = yield* Database</code> inside <code>Effect.gen</code>, what actually happens?</p>
+  <label><input type="radio" name="q2" value="a"> a) Database is instantiated by calling its constructor</label>
+  <label><input type="radio" name="q2" value="b"> b) The runtime looks up <code>"Database"</code> in the current fiber's Context and returns the stored value</label>
+  <label><input type="radio" name="q2" value="c"> c) Effect creates a new empty Database service</label>
+  <label><input type="radio" name="q2" value="d"> d) It imports the Database module and creates a singleton</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 001 &mdash; Context series. Next: <a href="0002-layer-effect.html">002 &mdash; Layer: constructing services with dependencies</a>
+  <br><br>
+  Stuck? Ask the agent &mdash; it can answer questions, show examples, or go deeper.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite &mdash; review the section above.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "b"); }
+function checkQ2() { check("q2", "b"); }
+</script>
+
+</body>
+</html>

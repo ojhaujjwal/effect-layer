@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>009 &mdash; Fiber Integration</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.6; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.8rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.85rem 1rem; overflow-x: auto; margin: 0.7rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.5;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem; margin: 0.8rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+    line-height: 1.65; white-space: pre; overflow-x: auto;
+  }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 0.8rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #166534; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>Fiber Integration <span style="font-weight:400;color:#94a3b8;">&mdash; The Runtime Layer Sits On</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 009 &mdash; How fibers carry context, scope, and memoization
+</p>
+
+<h2>What a fiber carries</h2>
+
+<p>
+  Every fiber is a lightweight thread of execution. It runs an Effect. Crucially,
+  every fiber carries a <strong>Context</strong> — the same typed map you learned
+  about in lesson 001. The fiber's context is the runtime storage for:
+</p>
+
+<table>
+<tr><th>Thing</th><th>Stored as</th><th>Used by</th></tr>
+<tr>
+  <td>Application services</td>
+  <td>Tags in context (e.g. <code>Database</code>)</td>
+  <td><code>yield* Database</code></td>
+</tr>
+<tr>
+  <td>Current Scope</td>
+  <td>Context.Reference <code>Scope.Scope</code></td>
+  <td><code>acquireRelease</code>, <code>Layer.build</code></td>
+</tr>
+<tr>
+  <td>MemoMap</td>
+  <td>Context.Service <code>CurrentMemoMap</code></td>
+  <td>Layer deduplication</td>
+</tr>
+<tr>
+  <td>Scheduler, Logger, Tracer…</td>
+  <td>Various References</td>
+  <td>Runtime infrastructure</td>
+</tr>
+</table>
+
+<div class="diagram">
+  Fiber #42 ───────────────────────────────┐
+  │  context: Context&lt;never&gt;                │
+  │  ┌──────────────────────────────────┐  │
+  │  │ "app/Database" → { query, ... }  │  │  ← Application services
+  │  │ "app/Logger"   → { log, ... }    │  │     (from layers)
+  │  │ "effect/Scope" → &lt;default scope&gt;  │  │  ← Scope for acquireRelease
+  │  │ "effect/Layer/  → &lt;shared map&gt;   │  │  ← MemoMap for deduplication
+  │  │  CurrentMemoMap"                 │  │
+  │  └──────────────────────────────────┘  │
+  │                                        │
+  │  id: 42                                │
+  │  currentOpCount: 1423                  │
+  │  ...                                   │
+  └────────────────────────────────────────┘
+</div>
+
+<h2>The central function: core.withFiber</h2>
+
+<p>
+  Internal Effect code accesses the current fiber via <code>withFiber</code>.
+  This is how <code>Layer.build</code> pulls Scope and MemoMap from the runtime:
+</p>
+
+<pre><code>// Source: packages/effect/src/Layer.ts:674
+export const build = (self: Layer&lt;ROut, E, RIn&gt;) =>
+  core.withFiber((fiber) =>           // ← access the current fiber
+    buildWithMemoMap(
+      self,
+      CurrentMemoMap.getOrCreate(fiber.context),  // ← get MemoMap
+      Context.getUnsafe(fiber.context, Scope.Scope)  // ← get Scope
+    )
+  )
+</code></pre>
+
+<div class="insight">
+  <strong>Every time you call <code>yield*</code>, the runtime calls
+  <code>withFiber</code> internally, reads the tag from the fiber's context, and
+  returns the stored value.</strong> The fiber is the bridge between type-level
+  declarations (<code>Effect&lt;A, E, R&gt;</code>) and runtime execution.
+</div>
+
+<h2>How Effect.provide puts services into the fiber</h2>
+
+<p>
+  The complete chain, from <code>Effect.provide(AppLayer)</code> to
+  <code>yield* Logger</code>:
+</p>
+
+<pre><code>// 1. Effect.provide(AppLayer) calls scopedWith
+scopedWith((scope) => {
+  // 2. Build the layer — this accesses the fiber for Scope + MemoMap
+  const context = Layer.buildWithScope(AppLayer, scope)  // → Context&lt;Logger|Database|Config&gt;
+
+  // 3. inject the built services into the fiber's context
+  provideContext(program, context)
+    // internally: fiber.context = fiber.context.merge(context)
+})
+
+// 4. Now when program does:
+const logger = yield* Logger
+// Runtime: withFiber(fiber => fiber.context.get("app/Logger"))
+// → returns { log: ..., error: ... }
+</code></pre>
+
+<h2>Fiber + context + fork</h2>
+
+<p>
+  In v4, forking always requires a Scope: <code>Effect.forkIn(scope)</code> or
+  <code>Effect.forkScoped</code>. The child fiber <strong>inherits the parent's
+  context</strong>, so all layered services are available:
+</p>
+
+<pre><code>const program = Effect.gen(function* () {
+  const db = yield* Database
+
+  // Fork a child — it inherits the parent's context (including Database!)
+  const fiber = yield* db.query("SELECT ...").pipe(
+    Effect.forkScoped  // child fiber automatically added to current Scope
+  )
+
+  // Do other work concurrently...
+  yield* Effect.sleep("1 second")
+
+  // Wait for the child
+  const result = yield* Fiber.join(fiber)
+})
+// Effect.provide(DatabaseLive) → Database is in the parent fiber's context
+//   → child fiber inherits context → Database available in child too ✓
+</code></pre>
+
+<div class="insight">
+  <strong>v3 users note:</strong> In v4, <code>forkScoped</code> and
+  <code>forkChild</code> automatically provide the current Scope. The child fiber
+  inherits the parent's context, unlike v3's <code>fork</code> which required
+  explicit <code>forkWith</code> for context propagation. The Scope requirement
+  on fork means forked fibers are always cleaned up.
+</div>
+
+<h2>MemoMap sharing across fibers</h2>
+
+<p>
+  The MemoMap is stored in the fiber context as <code>CurrentMemoMap</code>.
+  Child fibers inherit it. This means layer memoization is shared across a fiber
+  tree:
+</p>
+
+<pre><code>const parent = Effect.gen(function* () {
+  // Provide a layer — builds Database once, stores it in MemoMap
+  yield* program.pipe(Effect.provide(DatabaseLive))
+
+  // Fork a child — child inherits parent's context (including MemoMap)
+  yield* Effect.gen(function* () {
+    yield* program.pipe(Effect.provide(DatabaseLive)) // ← uses SAME MemoMap
+    // DatabaseLive is NOT rebuilt — already in the inherited MemoMap
+  }).pipe(Effect.forkScoped)
+})
+</code></pre>
+
+<h2>The full picture: fiber as the runtime backbone</h2>
+
+<div class="diagram">
+  ┌──────────────────────────────────────────────────────┐
+  │                     FIBER                            │
+  │                                                      │
+  │  ┌────────────────────────────────────────────────┐  │
+  │  │              FIBER CONTEXT                     │  │
+  │  │                                                │  │
+  │  │  Services   Scope    MemoMap   Scheduler  ...  │  │
+  │  │  (yield*)   (acqRel) (dedup)   (timing)        │  │
+  │  └────────────────────────────────────────────────┘  │
+  │                         │                            │
+  │     ┌───────────────────┼───────────────────┐        │
+  │     │                   │                   │        │
+  │     ▼                   ▼                   ▼        │
+  │  Layer.build        Effect.gen          acquireRel   │
+  │  reads Scope,       yield* reads       reads Scope   │
+  │  reads MemoMap      service from ctx   registers     │
+  │  builds services    from fiber ctx     finalizer     │
+  └──────────────────────────────────────────────────────┘
+</div>
+
+<p>
+  The fiber is not just "a user-land thread." It's the <strong>execution
+  environment</strong> that carries all the infrastructure Layer and Effect
+  need. When you <code>Effect.provide</code>, you're adding to the fiber's
+  context. When you <code>yield*</code>, you're reading from it. When you fork,
+  the child fiber gets a copy.
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/concurrency/fibers/">Fibers &mdash; Effect Documentation</a>
+  &middot;
+  <a href="https://effect.website/docs/requirements-management/layer-memoization/">Layer Memoization</a>
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> Where does <code>Layer.build</code> get its Scope and MemoMap from?</p>
+  <label><input type="radio" name="q1" value="a"> a) They are passed as explicit function parameters</label>
+  <label><input type="radio" name="q1" value="b"> b) From the current fiber's context via <code>withFiber</code></label>
+  <label><input type="radio" name="q1" value="c"> c) From global module-level singletons</label>
+  <label><input type="radio" name="q1" value="d"> d) From environment variables</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> When you fork an effect, does the child fiber get access to the parent's layered services?</p>
+  <label><input type="radio" name="q2" value="a"> a) No &mdash; each fiber has its own isolated context</label>
+  <label><input type="radio" name="q2" value="b"> b) Yes &mdash; the child inherits the parent fiber's context</label>
+  <label><input type="radio" name="q2" value="c"> c) Only if you explicitly pass them</label>
+  <label><input type="radio" name="q2" value="d"> d) Only for services built with Layer</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 009 &mdash; Previous: <a href="0008-scope.html">008 &mdash; Scope</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "b"); }
+function checkQ2() { check("q2", "b"); }
+</script>
+
+</body>
+</html>

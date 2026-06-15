@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>007 &mdash; Putting It All Together</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.6; color: #1a1a1a;
+    background: #fbfbf8; max-width: 780px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.8rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.85rem 1rem; overflow-x: auto; margin: 0.7rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.5;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+  .hl { background: #fef3c7; padding: 0 0.15rem; border-radius: 2px; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem; margin: 0.8rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+    line-height: 1.7; white-space: pre; overflow-x: auto;
+  }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.92rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Putting It All Together</h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 007 &mdash; A complete multi-service app with Config, Logger, Database, and UserRepo
+</p>
+
+<h2>The dependency graph we'll build</h2>
+
+<div class="diagram">
+                        ┌─────────┐
+                        │ Config  │  (leaf &mdash; no deps)
+                        └────┬────┘
+                             │ Layer.provide
+                    ┌────────┴────────┐
+                    ▼                 ▼
+              ┌─────────┐      ┌──────────┐
+              │ Logger  │      │ Database │  (both need Config)
+              └─────────┘      └────┬─────┘
+                                    │ Layer.provideMerge
+                              ┌─────┴─────┐
+                              ▼           ▼     (both need Database)
+                        ┌─────────┐  ┌──────────┐
+                        │UserRepo │  │OrderRepo │
+                        └─────────┘  └──────────┘
+                              │           │
+                              └─ merge ───┘
+                                    │
+                              AppLayer (all closed)
+                                    │ Effect.provide
+                                    ▼
+                                program
+</div>
+
+<h2>Step 1: Define all service tags</h2>
+
+<pre><code>import { Context, Effect, Exit, Layer, Scope } from "effect"
+
+// ─── Config ───
+class Config extends Context.Service&lt;Config, {
+  readonly get: Effect.Effect&lt;{
+    readonly dbUrl: string
+    readonly logLevel: string
+  }&gt;
+}&gt;()("app/Config") {}
+
+// ─── Logger ───
+class Logger extends Context.Service&lt;Logger, {
+  readonly info: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+  readonly error: (msg: string) =&gt; Effect.Effect&lt;void&gt;
+}&gt;()("app/Logger") {}
+
+// ─── Database (scoped resource) ───
+class Database extends Context.Service&lt;Database, {
+  readonly query: (sql: string) =&gt; Effect.Effect&lt;readonly unknown[]&gt;
+}&gt;()("app/Database") {}
+
+// ─── UserRepo ───
+class UserRepo extends Context.Service&lt;UserRepo, {
+  readonly all: Effect.Effect&lt;readonly unknown[]&gt;
+  readonly findById: (id: string) =&gt; Effect.Effect&lt;unknown&gt;
+}&gt;()("app/UserRepo") {}
+</code></pre>
+
+<h2>Step 2: Build each layer</h2>
+
+<pre><code>// ─── ConfigLive ─── (leaf, no deps)
+const ConfigLive = Layer.succeed(Config, {
+  get: Effect.succeed({
+    dbUrl: "postgres://localhost:5432/myapp",
+    logLevel: "INFO"
+  })
+})
+// Layer&lt;Config, never, never&gt;
+
+// ─── LoggerLive ─── (needs Config)
+const LoggerLive = Layer.effect(Logger,
+  Effect.gen(function* () {
+    const config = yield* Config
+    return {
+      info: (msg) =&gt;
+        Effect.gen(function* () {
+          const { logLevel } = yield* config.get
+          if (logLevel === "DEBUG" || logLevel === "INFO")
+            console.log(<span class="hl">`[INFO] ${msg}`</span>)
+        }),
+      error: (msg) =&gt; console.error(<span class="hl">`[ERROR] ${msg}`</span>)
+    }
+  })
+)
+// Layer&lt;Logger, never, Config&gt;
+
+// ─── DatabaseLive ─── (needs Config, scoped resource)
+const DatabaseLive = Layer.effect(Database,
+  Effect.gen(function* () {
+    const config = yield* Config
+    const { dbUrl } = yield* config.get
+
+    // Acquire a connection WITH cleanup
+    const pool = yield* Effect.acquireRelease(
+      // acquire: connect to database
+      Effect.tryPromise({
+        try: () =&gt; {
+          console.log(<span class="hl">`Connecting to ${dbUrl}...`</span>)
+          return createConnectionPool(dbUrl)
+        },
+        catch: (e) =&gt; new Error(<span class="hl">`DB connection failed: ${e}`</span>)
+      }),
+      // release: close pool when Scope ends
+      (pool, exit) =&gt;
+        Exit.match(exit, {
+          onSuccess: () =&gt;
+            Effect.promise(() =&gt; pool.end()),
+          onFailure: () =&gt;
+            Effect.promise(() =&gt; pool.end())
+        })
+    )
+
+    return {
+      query: (sql: string) =&gt;
+        Effect.tryPromise(() =&gt; pool.query(sql)).pipe(
+          Effect.map((result) =&gt; result.rows)
+        )
+    }
+  })
+)
+// Layer&lt;Database, Error, Config&gt;
+//                              ^^^^ needs Config
+
+// ─── UserRepoLive ─── (needs Database)
+const UserRepoLive = Layer.effect(UserRepo,
+  Effect.gen(function* () {
+    const db = yield* Database
+    return {
+      all: db.query("SELECT * FROM users"),
+      findById: (id: string) =&gt;
+        db.query(<span class="hl">`SELECT * FROM users WHERE id = '${id}'`</span>).pipe(
+          Effect.map((rows) =&gt; rows[0])
+        )
+    }
+  })
+)
+// Layer&lt;UserRepo, Error, Database&gt;
+</code></pre>
+
+<h2>Step 3: Wire the graph</h2>
+
+<pre><code>// Close leaf dependencies first, then combine horizontally
+
+// 1. Logger and Database both need Config — satisfy that
+const LoggerWithConfig = LoggerLive.pipe(
+  Layer.provide(ConfigLive)
+)
+// Layer&lt;Logger, Error, never&gt;
+
+const DatabaseWithConfig = DatabaseLive.pipe(
+  Layer.provideMerge(ConfigLive)
+  //   ^^^^^^^^^^^^^  keep Config in output for later
+)
+// Layer&lt;Database | Config, Error, never&gt;
+
+// 2. UserRepo needs Database — satisfy it, but keep Database visible
+//    (so Config gets shared through the graph)
+const UserRepoWithDb = UserRepoLive.pipe(
+  Layer.provideMerge(DatabaseWithConfig)
+)
+// Layer&lt;UserRepo | Database | Config, Error, never&gt;
+
+// 3. Merge everything into the final app layer
+const AppLayer = LoggerWithConfig.pipe(
+  Layer.merge(UserRepoWithDb)
+)
+// Layer&lt;Logger | UserRepo | Database | Config, Error, never&gt;
+//         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  all services present
+//                                        all requirements satisfied
+</code></pre>
+
+<div class="insight">
+  <strong>Pattern:</strong> Use <code>provide</code> when a dependency is only needed by
+  one consumer. Use <code>provideMerge</code> when a dependency is needed by multiple
+  consumers (keeps it visible for downstream sharing). Use <code>merge</code> to
+  combine independent subtrees.
+</div>
+
+<h2>Step 4: Write the program and provide once</h2>
+
+<pre><code>const program = Effect.gen(function* () {
+  const logger = yield* Logger
+  const users = yield* UserRepo
+
+  yield* logger.info("Fetching all users...")
+  const allUsers = yield* users.all
+  yield* logger.info(<span class="hl">`Found ${allUsers.length} users`</span>)
+
+  return allUsers
+})
+// Effect&lt;readonly unknown[], Error, <span class="hl">Logger | UserRepo</span>&gt;
+//                                 ^^^^^^^^^^^^^^^^^^^
+//                             declares its needs explicitly
+
+const runnable = program.pipe(Effect.provide(AppLayer))
+// Effect&lt;readonly unknown[], Error, <span class="hl">never</span>&gt;
+//                                  ^^^^^ all satisfied!
+
+Effect.runPromise(runnable).then(console.log)
+</code></pre>
+
+<h2>What happens at runtime</h2>
+
+<div class="diagram">
+Effect.provide(AppLayer)
+  │
+  ├─ Scope created
+  │
+  ├─ Build ConfigLive         (Layer.succeed → instant)
+  │
+  ├─ Build LoggerLive         (runs generator, captures Config)
+  ├─ Build DatabaseLive       (runs generator: acquireRelease registers cleanup)
+  │    │                       (pool created, finalizer registered on Scope)
+  │    │
+  │    └─ Build UserRepoLive  (runs generator, captures Database)
+  │
+  ├─ Run program              (Logger + UserRepo + Database all working)
+  │    │
+  │    ├─ logger.info(...)
+  │    ├─ users.all → db.query(...) → pool.query(...)
+  │    └─ logger.info(...)
+  │
+  └─ Scope closes
+       │
+       ├─ pool.end()          (release from acquireRelease)
+       └─ All resources freed
+</div>
+
+<h2>The type flow summarised</h2>
+
+<pre><code>SERVICE         LAYER TYPE                   STATUS
+───────         ──────────                   ──────
+Config          Layer&lt;Config, never, never&gt;            leaf
+Logger          Layer&lt;Logger, never, Config&gt;           needs Config
+Database        Layer&lt;Database, Error, Config&gt;        needs Config, scoped
+UserRepo        Layer&lt;UserRepo, Error, Database&gt;      needs Database
+
+                    ... after wiring ...
+
+AppLayer        Layer&lt;Logger | UserRepo | Database | Config, Error, never&gt;
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      all services produced, no requirements remaining
+
+program         Effect&lt;A, Error, Logger | UserRepo&gt;
+                      ... after Effect.provide(AppLayer) ...
+runnable        Effect&lt;A, Error, never&gt;  ✅
+</code></pre>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>All lessons in this series</h2>
+
+<table>
+<tr><td><a href="0001-context.html">001</a></td><td>Context: how services reach your code</td></tr>
+<tr><td><a href="0002-layer-construction.html">002</a></td><td>Layer.succeed, Layer.effect, basic wiring</td></tr>
+<tr><td><a href="0003-provide-deep-dive.html">003</a></td><td>Layer.provide &amp; Effect.provide deep dive</td></tr>
+<tr><td><a href="0004-merge-provideMerge.html">004</a></td><td>Layer.merge &amp; Layer.provideMerge</td></tr>
+<tr><td><a href="0005-memoization.html">005</a></td><td>Layer memoization &amp; reference identity</td></tr>
+<tr><td><a href="0006-scoped-resources.html">006</a></td><td>Scoped resources &amp; cleanup</td></tr>
+<tr><td><strong>007</strong></td><td><strong>Putting it all together</strong></td></tr>
+</table>
+
+<div class="nav">
+  You've covered the full Layer surface. What's left depends on your mission:
+  testing with Layer (mocking), runtime integration details, or building something
+  real. Ask the agent what you want to explore next.
+</div>
+
+</body>
+</html>

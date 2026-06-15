@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>005 &mdash; Layer Memoization</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.92rem; }
+  th { background: #f1f5f9; text-align: left; padding: 0.35rem 0.55rem; }
+  td { padding: 0.35rem 0.55rem; border-bottom: 1px solid #f1f5f9; }
+
+  .bad { border-left: 3px solid #ef4444; padding-left: 0.8rem; margin: 0.7rem 0; }
+  .good { border-left: 3px solid #22c55e; padding-left: 0.8rem; margin: 0.7rem 0; }
+
+  .insight {
+    background: #ef444410; border: 1px solid #fecaca; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #dc2626; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>Layer Memoization <span style="font-weight:400;color:#94a3b8;">&mdash; Sharing &amp; Freshness</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 005 &mdash; How Effect shares layers, the reference-identity footgun, and opting out
+</p>
+
+<h2>The problem: building the same layer twice</h2>
+
+<p>
+  Your dependency graph is a tree. Branches can converge on the same dependency.
+  If UserRepo and OrderRepo both need Database, you don't want <em>two</em> database
+  connections.
+</p>
+
+<div class="diagram">
+       UserRepo           OrderRepo
+           │                  │
+           ├── needs Database ─┤
+           │                  │
+           ▼                  ▼
+  ┌──────────────┐   ┌──────────────┐
+  │  Database    │   │  Database    │  &larr; WRONG &mdash; two pools
+  │  connect()   │   │  connect()   │
+  └──────────────┘   └──────────────┘
+</div>
+
+<p>
+  Layer memoization solves this: <strong>the same layer instance is built exactly once</strong>,
+  even when it appears multiple times in the composition.
+</p>
+
+<h2>How it works: reference-identity memoization</h2>
+
+<p>
+  Effect tracks which Layer instances have been built using a <strong>MemoMap</strong> &mdash;
+  essentially a <code>Map&lt;Layer, Context&gt;</code> backed by a <code>SynchronizedRef</code>.
+  When a layer is about to be built, the runtime checks:
+</p>
+
+<ol style="margin:0.5rem 0 0.5rem 1.5rem; line-height:1.8;">
+  <li>Is this exact layer instance already in the MemoMap?</li>
+  <li>If yes &mdash; reuse the cached context. Skip construction.</li>
+  <li>If no &mdash; build it, store the result, increment the reference count.</li>
+</ol>
+
+<div class="insight">
+  <strong>The key word is "instance."</strong> Memoization works by <em>object reference</em>
+  (===), not by structural equality. This is the footgun.
+</div>
+
+<h2>The footgun: parameterized layer constructors</h2>
+
+<p>
+  If you create a layer by calling a function, each call produces a <em>different</em>
+  object reference. The MemoMap sees them as different layers. Each gets built
+  independently:
+</p>
+
+<div class="bad">
+  <strong>Wrong: two different layer instances, two database pools</strong>
+  <pre style="font-size:0.82rem;"><code>// postgresLayer is a function that returns a new Layer each time
+declare const postgresLayer: (opts: { url: string }) =&gt; Layer&lt;Database&gt;
+
+const AppLayer = Layer.merge(
+  UserRepoLive.pipe(
+    Layer.provide(postgresLayer({ url: "postgres://localhost/db" }))
+  ),
+  OrderRepoLive.pipe(
+    Layer.provide(postgresLayer({ url: "postgres://localhost/db" }))
+  )
+)
+// postgresLayer({...}) called twice &rarr; two different references &rarr; TWO pools!</code></pre>
+</div>
+
+<div class="good">
+  <strong>Right: bind to a constant first</strong>
+  <pre style="font-size:0.82rem;"><code>// Store the result in a module-level constant
+const DatabaseLive = postgresLayer({ url: "postgres://localhost/db" })
+
+const AppLayer = Layer.merge(
+  UserRepoLive.pipe(Layer.provide(DatabaseLive)),
+  OrderRepoLive.pipe(Layer.provide(DatabaseLive))
+)
+// Same reference used twice &rarr; memoized &rarr; ONE pool shared</code></pre>
+</div>
+
+<p>
+  Rule: <strong>always store parameterized layer results in a <code>const</code></strong>
+  before using them in multiple places in your graph.
+</p>
+
+<h2>v4 change: shared MemoMap across provide calls</h2>
+
+<p>
+  In v3, each <code>Effect.provide</code> call created its own isolated MemoMap.
+  Two <code>provide</code> calls with the same layer would silently build it twice.
+</p>
+
+<p>
+  <strong>In v4, the MemoMap is shared</strong> across all <code>Effect.provide</code> calls
+  on the same fiber. The same layer instance is built once regardless of how many
+  <code>provide</code> calls reference it:
+</p>
+
+<pre><code>const program = Effect.gen(function* () {
+  const svc = yield* MyService
+  return svc.value
+})
+
+const main = program.pipe(
+  Effect.provide(MyServiceLayer, consoleLog("first provide")),
+  Effect.provide(MyServiceLayer, consoleLog("second provide"))
+)
+// v3: "Building MyService" logged TWICE
+// v4: "Building MyService" logged ONCE &mdash; MemoMap is shared
+</code></pre>
+
+<div class="insight">
+  <strong>Still prefer one <code>provide</code>.</strong> The shared MemoMap is a safety net,
+  not a substitute for proper layer composition. Compose your layers first, then
+  provide once at the top.
+</div>
+
+<h2>Opting out: Layer.fresh and { local: true }</h2>
+
+<p>
+  Sometimes you <em>want</em> a layer rebuilt &mdash; for test isolation, or
+  independent resource pools. Two mechanisms:
+</p>
+
+<table>
+  <tr>
+    <th style="width:30%">Mechanism</th>
+    <th style="width:40%">What it does</th>
+    <th style="width:30%">Use for</th>
+  </tr>
+  <tr>
+    <td><code>Layer.fresh(layer)</code></td>
+    <td>Wraps a layer so it bypasses the MemoMap entirely</td>
+    <td>One specific layer must never be shared</td>
+  </tr>
+  <tr>
+    <td><code>Effect.provide(layer, { local: true })</code></td>
+    <td>Builds the layer with its own private MemoMap</td>
+    <td>An entire subtree must be isolated</td>
+  </tr>
+</table>
+
+<h3>Layer.fresh</h3>
+
+<pre><code>const main = program.pipe(
+  Effect.provide(MyServiceLayer),           // built ONCE
+  Effect.provide(Layer.fresh(MyServiceLayer)) // built AGAIN (fresh MemoMap)
+)
+// "Building MyService" logged TWICE</code></pre>
+
+<h3>Effect.provide with { local: true }</h3>
+
+<pre><code>const main = program.pipe(
+  Effect.provide(MyServiceLayer),                    // shared MemoMap
+  Effect.provide(MyServiceLayer, { local: true })     // private MemoMap
+)
+// "Building MyService" logged TWICE &mdash; local creates its own scope
+</code></pre>
+
+<p>
+  <code>local: true</code> is preferred for test suites &mdash; provide the test
+  layer with <code>{ local: true }</code> so each test gets fresh resources.
+</p>
+
+<h2>Memoization + Scope = automatic cleanup</h2>
+
+<p>
+  When a layer is memoized, the MemoMap tracks a reference count. Finalizers
+  (cleanup) are registered on the scope. When the scope closes, all finalizers
+  run. This means scoped resources (database connections, file handles) are
+  properly released &mdash; and only <em>once</em>, because the layer was built
+  only once.
+</p>
+
+<pre><code>const DatabaseLive = Layer.effect(Database,
+  Effect.gen(function* () {
+    console.log("connecting...")
+    const connection = yield* acquireRelease(
+      connectToDb(),                    // acquire
+      (conn) =&gt; Effect.sync(() =&gt; conn.close())  // release
+    )
+    return { query: (sql) =&gt; connection.query(sql) }
+  })
+)
+
+// Even if DatabaseLive appears 5 times in the graph:
+// - "connecting..." is logged ONCE
+// - conn.close() is called ONCE when the scope ends
+</code></pre>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/layer-memoization/">Layer Memoization &mdash; Effect Docs</a>
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> Layer memoization works by:</p>
+  <label><input type="radio" name="q1" value="a"> a) Comparing the type signatures of layers</label>
+  <label><input type="radio" name="q1" value="b"> b) Checking object reference identity (===)</label>
+  <label><input type="radio" name="q1" value="c"> c) Hashing the implementation code</label>
+  <label><input type="radio" name="q1" value="d"> d) Comparing the tag string inside the layer</label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> The main footgun with layer memoization is:</p>
+  <label><input type="radio" name="q2" value="a"> a) Layers are never shared across Effect.provide calls</label>
+  <label><input type="radio" name="q2" value="b"> b) Calling a layer constructor function twice creates two different references</label>
+  <label><input type="radio" name="q2" value="c"> c) Memoization doesn't work with Layer.merge</label>
+  <label><input type="radio" name="q2" value="d"> d) Memoization leaks memory over time</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 005 &mdash; Previous: <a href="0004-merge-provideMerge.html">004 &mdash; merge &amp; provideMerge</a>
+  &middot; Next: <a href="0006-scoped-resources.html">006 &mdash; Scoped Resources &amp; Cleanup</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "b"); }
+function checkQ2() { check("q2", "b"); }
+</script>
+
+</body>
+</html>

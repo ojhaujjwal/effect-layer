@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>006 &mdash; Scoped Resources &amp; Cleanup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 1.1rem; line-height: 1.65; color: #1a1a1a;
+    background: #fbfbf8; max-width: 740px; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+
+  h1 { font-size: 1.7rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 0.7rem; color: #2c3e50; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+
+  p { margin-bottom: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  pre {
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; overflow-x: auto; margin: 0.8rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }
+  pre code { font-size: inherit; }
+
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 1.1rem; margin: 1rem 0; text-align: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.83rem;
+    line-height: 1.7; white-space: pre;
+  }
+
+  .timeline {
+    display: flex; gap: 0; margin: 1rem 0; font-size: 0.83rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .timeline > div { flex: 1; padding: 0.5rem; text-align: center; }
+  .timeline > div:nth-child(odd) { background: #eff6ff; border: 1px solid #bfdbfe; }
+  .timeline > div:nth-child(even) { background: #f0fdf4; border: 1px solid #bbf7d0; }
+
+  .insight {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.92rem;
+  }
+  .insight strong { color: #166534; }
+
+  .quiz {
+    background: #fef9c3; border: 1px solid #fde68a; border-radius: 8px;
+    padding: 1.1rem 1.3rem; margin: 1.3rem 0;
+  }
+  .quiz h3 { margin-top: 0; }
+  .quiz label { display: block; margin: 0.35rem 0; cursor: pointer; }
+  .quiz button {
+    margin-top: 0.7rem; padding: 0.35rem 0.9rem; cursor: pointer;
+    border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc;
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .quiz .feedback { margin-top: 0.4rem; font-weight: 600; min-height: 1.4em; }
+
+  .nav {
+    margin-top: 3rem; padding-top: 0.9rem; border-top: 1px solid #e2e8f0;
+    font-size: 0.88rem; color: #94a3b8;
+  }
+  .nav a { color: #64748b; }
+</style>
+</head>
+<body>
+
+<h1>Scoped Resources <span style="font-weight:400;color:#94a3b8;">&mdash; Acquire &amp; Clean Up</span></h1>
+<p style="color:#64748b;font-size:0.92rem;">
+  Lesson 006 &mdash; How resources get closed when a layered effect finishes
+</p>
+
+<h2>The question you had</h2>
+
+<blockquote style="border-left:3px solid #ddd6fe;margin:0.9rem 0;padding:0.4rem 0.9rem;color:#4c1d95;font-style:italic;background:#f5f3ff;border-radius:0 6px 6px 0;">
+  How is a database connection actually closed when a layered effect finishes?
+</blockquote>
+
+<p>
+  The answer involves one concept you already know (<code>Layer.effect</code>) and
+  one you may not (<strong>Scope</strong>). Here's how they connect.
+</p>
+
+<h2>The three players</h2>
+
+<table>
+<tr><th>Player</th><th>Role</th></tr>
+<tr>
+  <td><code>Scope</code></td>
+  <td>A lifecycle boundary. Tracks finalizers (cleanup functions). When closed,
+  all finalizers run in reverse order.</td>
+</tr>
+<tr>
+  <td><code>Effect.acquireRelease</code></td>
+  <td>Acquires a resource and registers a cleanup finalizer on the <em>current</em>
+  Scope. Returns an Effect that requires Scope.</td>
+</tr>
+<tr>
+  <td><code>Layer.effect</code></td>
+  <td>The generator inside runs within a Scope (provided by the Layer build
+  process). Any <code>acquireRelease</code> calls inside it register
+  finalizers on that Scope.</td>
+</tr>
+</table>
+
+<h2>The lifecycle, step by step</h2>
+
+<div class="timeline">
+  <div>Effect.provide<br>starts</div>
+  <div>Layer is built<br>Scope opens</div>
+  <div>acquireRelease<br>connects to DB</div>
+  <div>Program<br>runs</div>
+  <div>Program<br>ends</div>
+  <div>Scope closes<br>finalizers run<br>DB disconnects</div>
+</div>
+
+<pre><code>class Database extends Context.Service&lt;Database, {
+  readonly query: (sql: string) =&gt; Effect.Effect&lt;unknown[]&gt;
+}&gt;()("Database") {}
+
+const DatabaseLive = Layer.effect(Database,
+  Effect.gen(function* () {
+    // (1) acquireRelease registers "close" as a finalizer on the current Scope
+    const connection = yield* Effect.acquireRelease(
+      // acquire
+      Effect.tryPromise(() =&gt; createConnection("postgres://...")),
+      // release &mdash; runs when Scope closes
+      (conn) =&gt; Effect.promise(() =&gt; conn.close())
+    )
+
+    return {
+      query: (sql: string) =&gt;
+        Effect.tryPromise(() =&gt; connection.query(sql))
+    }
+  })
+)</code></pre>
+
+<p>
+  When <code>Effect.provide(DatabaseLive)</code> runs:
+</p>
+
+<ol style="margin:0.5rem 0 0.5rem 1.5rem; line-height:1.8;">
+  <li><strong>Scope is created</strong> — <code>Effect.provide</code> internally calls
+    <code>Layer.build</code>, which requires (and is provided) a Scope.</li>
+  <li><strong>Layer.effect generator runs</strong> — acquires the connection.
+    <code>acquireRelease</code> registers the <code>release</code> callback on the Scope.
+    The connection reference is captured in the returned service closure.</li>
+  <li><strong>Your program runs</strong> — calling <code>connection.query()</code> works
+    because the connection is alive and captured in the closure.</li>
+  <li><strong>Program finishes</strong> — the Scope created in step 1 is closed.</li>
+  <li><strong>All finalizers run</strong> — the Scope walks its finalizer list in LIFO
+    order. <code>conn.close()</code> runs. The connection is released.</li>
+</ol>
+
+<div class="insight">
+  <strong>No explicit <code>Layer.scoped</code> needed in v4.</strong>
+  Just use <code>Effect.acquireRelease</code> inside <code>Layer.effect</code>.
+  The Layer build process automatically provides the Scope, and
+  <code>Effect.provide</code> automatically closes it when done.
+</div>
+
+<h2>acquireRelease signature (v4)</h2>
+
+<pre><code>Effect.acquireRelease&lt;A, E, R&gt;(
+  acquire: Effect&lt;A, E, R&gt;,
+  release: (resource: A, exit: Exit&lt;unknown, unknown&gt;) =&gt; Effect&lt;unknown&gt;
+): Effect&lt;A, E, R | Scope&gt;
+//                      ^^^^^  "I need a Scope to run"</code></pre>
+
+<p>
+  The <code>release</code> function receives the <strong>exit value</strong> — you can
+  inspect whether the program succeeded or failed when doing cleanup:
+</p>
+
+<pre><code>const file = yield* Effect.acquireRelease(
+  Effect.sync(() =&gt; fs.openSync("data.txt", "w")),
+  (handle, exit) =&gt;
+    Exit.match(exit, {
+      onSuccess: () =&gt; Effect.sync(() =&gt; fs.closeSync(handle)),
+      onFailure: (cause) =&gt;
+        Effect.sync(() =&gt; {
+          fs.closeSync(handle)
+          fs.unlinkSync("data.txt") // clean up partial file on failure
+        })
+    })
+)</code></pre>
+
+<h2>Where does the Scope come from?</h2>
+
+<p>
+  It's provided automatically at two levels:
+</p>
+
+<table>
+<tr><th>Level</th><th>How Scope is provided</th><th>Result type</th></tr>
+<tr>
+  <td><code>Layer.build(layer)</code></td>
+  <td>Requires Scope in R &mdash; caller must provide it</td>
+  <td><code>Effect&lt;Context&lt;ROut&gt;, E, RIn | Scope&gt;</code></td>
+</tr>
+<tr>
+  <td><code>Effect.provide(layer)</code></td>
+  <td>Creates its own Scope internally, builds the layer, runs the program, then closes the Scope</td>
+  <td><code>Effect&lt;A, E, never&gt;</code> (Scope requirement satisfied)</td>
+</tr>
+</table>
+
+<pre><code>// Layer.build: you control the Scope
+Effect.gen(function* () {
+  const myScope = yield* Scope.make()
+  const context = yield* Layer.build(layer).pipe(
+    Scope.provide(myScope)  // provide the Scope
+  )
+  // ... use context ...
+  yield* Scope.close(myScope) // explicitly close &mdash; finalizers run
+})
+
+// Effect.provide:  Scope is managed for you
+program.pipe(Effect.provide(layer))
+// Scope created &rarr; layer built &rarr; program runs &rarr; Scope closed automatically
+</code></pre>
+
+<h2>Memoization + Scope</h2>
+
+<p>
+  Remember lesson 005: layers are built once and shared. The Scope tracks reference
+  counts. A finalizer only runs when the <strong>last</strong> consumer of the layer
+  is done — not when the first one finishes. This prevents premature cleanup:
+</p>
+
+<pre><code>// DatabaseLive is built ONCE, shared between UserRepo and OrderRepo
+const AppLayer = Layer.merge(
+  UserRepoLive.pipe(Layer.provideMerge(DatabaseLive)),
+  OrderRepoLive.pipe(Layer.provideMerge(DatabaseLive))
+)
+
+// Both repos use the same connection pool
+// When the program ends &rarr; Scope closes &rarr; pool is released ONCE
+</code></pre>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<h2>Primary source</h2>
+<p>
+  <a href="https://effect.website/docs/requirements-management/layers/">Managing Layers &mdash; Effect Docs</a>
+  &middot;
+  <a href="https://effect.website/docs/resource-management/scope/">Scope &mdash; Effect Docs</a>
+</p>
+
+<hr style="margin:2rem 0;border:none;border-top:1px solid #e2e8f0;">
+
+<div class="quiz">
+<h3>Retrieval practice</h3>
+
+<form id="q1" onsubmit="return false;">
+  <p><strong>Q1.</strong> In v4, how do you register cleanup for a resource inside a Layer?</p>
+  <label><input type="radio" name="q1" value="a"> a) Use <code>Layer.scoped</code> instead of <code>Layer.effect</code></label>
+  <label><input type="radio" name="q1" value="b"> b) Use <code>Effect.acquireRelease</code> inside the <code>Layer.effect</code> generator</label>
+  <label><input type="radio" name="q1" value="c"> c) Return a <code>dispose()</code> method from the service</label>
+  <label><input type="radio" name="q1" value="d"> d) Wrap the layer in <code>Effect.scoped</code></label>
+  <button type="button" onclick="checkQ1()">Check</button>
+  <div class="feedback" id="q1-fb"></div>
+</form>
+
+<form id="q2" onsubmit="return false;" style="margin-top:1rem;">
+  <p><strong>Q2.</strong> When does the database connection actually get closed?</p>
+  <label><input type="radio" name="q2" value="a"> a) When the last query completes</label>
+  <label><input type="radio" name="q2" value="b"> b) When the Scope created by Effect.provide closes &mdash; after the program finishes</label>
+  <label><input type="radio" name="q2" value="c"> c) When <code>Layer.effect</code> returns</label>
+  <label><input type="radio" name="q2" value="d"> d) Immediately after <code>acquireRelease</code> is called</label>
+  <button type="button" onclick="checkQ2()">Check</button>
+  <div class="feedback" id="q2-fb"></div>
+</form>
+</div>
+
+<div class="nav">
+  Lesson 006 &mdash; Previous: <a href="0005-memoization.html">005 &mdash; Memoization</a>
+  &middot; Next: <a href="0007-effect-service.html">007 &mdash; Effect.Service &amp; Putting It All Together</a>
+  <br><br>
+  Questions? Ask the agent.
+</div>
+
+<script>
+function check(prefix, correct) {
+  const fb = document.getElementById(prefix + "-fb");
+  const sel = document.querySelector('input[name="' + prefix + '"]:checked');
+  if (!sel) { fb.textContent = "Pick an answer first."; fb.style.color = "#b45309"; return; }
+  fb.textContent = sel.value === correct ? "Correct." : "Not quite.";
+  fb.style.color = sel.value === correct ? "#15803d" : "#dc2626";
+}
+function checkQ1() { check("q1", "b"); }
+function checkQ2() { check("q2", "b"); }
+</script>
+
+</body>
+</html>
